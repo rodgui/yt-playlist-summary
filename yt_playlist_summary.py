@@ -12,9 +12,11 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional, Dict, List, Tuple
+import shutil
 
 import yt_dlp
-from pydub import AudioSegment
+import subprocess
 
 # Import transcription functionality from mywhisper
 from mywhisper import transcribe_audio_to_srt
@@ -35,40 +37,112 @@ def setup_logging(verbose: bool = False) -> None:
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logger.debug("Verbose logging enabled")
+    else:
+        # Suprimir warnings do yt-dlp quando não estiver em verbose
+        logging.getLogger('yt_dlp').setLevel(logging.ERROR)
+        logging.getLogger().setLevel(logging.INFO)
 
+
+# Extensões de mídia aceitas para processamento (evita tratar .srt como mídia)
+SUPPORTED_MEDIA_EXTS = {
+    '.mp4', '.mkv', '.webm',
+    '.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'
+}
+
+def _normalize_lang_variants(lang: str) -> list[str]:
+    """
+    Normaliza códigos de idioma para múltiplas variantes aceitáveis:
+    'pt-BR' -> ['pt-br','ptbr','pt_br','ptbr','pt']
+    'enUS'  -> ['enus','en_us','en-us','en']
+    """
+    l = lang.strip().lower()
+    base = l.split('-')[0].split('_')[0]
+    variants = {l, l.replace('-', '_'), l.replace('-', ''), base}
+    # Heurística adicional: enus -> en-us, ptbr -> pt-br
+    if len(l) > 2:
+        variants.add(f"{base}-{l[len(base):]}")
+        variants.add(f"{base}_{l[len(base):]}")
+    return list(variants)
+
+def _subtitle_langs_in_entry(entry: dict) -> dict:
+    """
+    Extrai mapa de idiomas disponíveis: {lang_code: {'type': 'manual'|'auto'}}
+    Considera entry['subtitles'] e entry['automatic_captions'].
+    """
+    available: Dict[str, dict] = {}
+    subs = entry.get('subtitles') or {}
+    autos = entry.get('automatic_captions') or {}
+    for lang_code, tracks in subs.items():
+        if tracks:
+            available[lang_code.lower()] = {'type': 'manual'}
+    for lang_code, tracks in autos.items():
+        if tracks:
+            lc = lang_code.lower()
+            if lc not in available:
+                available[lc] = {'type': 'auto'}
+            else:
+                # Se já manual, mantemos manual como prioridade
+                pass
+    return available
+
+def _match_requested_lang(available_langs: dict, requested: list[str]) -> Optional[str]:
+    """
+    Tenta casar requested (com variantes) com available_langs. Prioriza manual sobre auto.
+    Retorna código real presente em available_langs ou None.
+    """
+    # Ordenar por tipo: manual primeiro
+    manual = [k for k, v in available_langs.items() if v['type'] == 'manual']
+    auto = [k for k, v in available_langs.items() if v['type'] == 'auto']
+
+    # Gerar todas variantes
+    requested_variants: List[List[str]] = [_normalize_lang_variants(r) for r in requested]
+
+    def find_in_pool(pool: List[str]) -> Optional[str]:
+        pool_l = [p.lower() for p in pool]
+        for variants in requested_variants:
+            for v in variants:
+                for p in pool_l:
+                    # Casamento por igualdade ou prefixo base
+                    if p == v or p.startswith(v):
+                        return p
+        return None
+
+    chosen = find_in_pool(manual) or find_in_pool(auto)
+    return chosen
 
 def download_playlist(
     playlist_url: str,
     output_dir: str,
-    audio_only: bool = False
-) -> list[str]:
+    audio_only: bool = False,
+    download_subtitles: bool = False,
+    subtitle_languages: Optional[list[str]] = None,
+    download_delay: int = 5,
+    interactive: bool = False
+) -> list[dict]:
     """
-    Download videos from a YouTube playlist.
+    Download videos (and opcionalmente legendas) de uma playlist.
+    Retorna lista de dicts com caminho e info de legendas.
     
     Args:
-        playlist_url: URL of the YouTube playlist
-        output_dir: Directory to save downloaded files
-        audio_only: If True, download only audio
-        
-    Returns:
-        List of paths to downloaded files
+        download_delay: Delay em segundos entre downloads (default: 5s)
+        interactive: Se True, aguarda confirmação do usuário antes de iniciar downloads
     """
-    downloaded_files = []
-    
-    # Create output directory if it doesn't exist
+    downloaded = []
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Configure yt-dlp options
-    ydl_opts = {
+
+    base_opts = {
         'outtmpl': os.path.join(output_dir, '%(playlist_index)s_%(title)s.%(ext)s'),
         'ignoreerrors': True,
-        'no_warnings': False,
+        'no_warnings': True,  # Suprimir warnings do yt-dlp
+        'quiet': True,  # Modo silencioso do yt-dlp
         'extract_flat': False,
         'progress_hooks': [lambda d: logger.debug(f"Download progress: {d.get('status', 'unknown')}")],
+        'sleep_interval': download_delay,
+        'max_sleep_interval': download_delay,
     }
-    
+
     if audio_only:
-        ydl_opts.update({
+        base_opts.update({
             'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -76,78 +150,282 @@ def download_playlist(
                 'preferredquality': '192',
             }],
         })
-        logger.info("Downloading audio only")
+        logger.info("📻 Modo: somente áudio")
     else:
-        ydl_opts.update({
+        base_opts.update({
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         })
-        logger.info("Downloading video and audio")
-    
+        logger.info("🎬 Modo: vídeo + áudio")
+
+    if download_subtitles:
+        langs = subtitle_languages or ['en', 'pt']
+        base_opts.update({
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': langs,
+            'subtitlesformat': 'srt',
+        })
+        logger.info(f"📝 Tentando baixar legendas existentes: {', '.join(langs)}")
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Starting download from playlist: {playlist_url}")
-            
-            # Extract playlist info first
+        logger.info("🔍 Consultando playlist no YouTube...")
+        with yt_dlp.YoutubeDL(base_opts) as ydl:
+            # Extrair metadados apenas uma vez
             info = ydl.extract_info(playlist_url, download=False)
-            
             if info is None:
-                logger.error("Failed to extract playlist information")
-                return downloaded_files
+                logger.error("❌ Falha ao extrair informações da playlist")
+                return downloaded
+
+            entries = info['entries'] if 'entries' in info else [info]
+            entries = [e for e in entries if e]
+            total_videos = len(entries)
             
-            # Check if it's a playlist or single video
-            if 'entries' in info:
-                total_videos = len([e for e in info['entries'] if e is not None])
-                logger.info(f"Found {total_videos} videos in playlist")
+            # Calcular tempo total estimado
+            total_duration = sum(e.get('duration', 0) for e in entries)
+            total_hours = total_duration // 3600
+            total_minutes = (total_duration % 3600) // 60
+            total_seconds = total_duration % 60
+            
+            # Estimar tempo de processamento (download + delays)
+            estimated_download_time = total_videos * 30
+            estimated_delay_time = (total_videos - 1) * download_delay if total_videos > 1 else 0
+            estimated_total = estimated_download_time + estimated_delay_time
+            est_hours = estimated_total // 3600
+            est_minutes = (estimated_total % 3600) // 60
+            
+            # Exibir prévia da playlist
+            logger.info("=" * 60)
+            logger.info(f"✅ Playlist encontrada: {total_videos} vídeo(s)")
+            logger.info("=" * 60)
+            
+            for idx, entry in enumerate(entries, 1):
+                title = entry.get('title', 'Unknown')
+                duration = entry.get('duration', 0)
+                duration_str = f"{duration//60}:{duration%60:02d}" if duration else "N/A"
+                logger.info(f"  {idx}. {title} ({duration_str})")
+            
+            logger.info("=" * 60)
+            
+            # Exibir resumo de tempo
+            if total_hours > 0:
+                logger.info(f"⏱️  Duração total: {total_hours}h {total_minutes}m {total_seconds}s")
             else:
-                logger.info("Processing single video")
+                logger.info(f"⏱️  Duração total: {total_minutes}m {total_seconds}s")
             
-            # Download the videos
-            ydl.download([playlist_url])
+            if est_hours > 0:
+                logger.info(f"⏳ Tempo estimado de download: ~{est_hours}h {est_minutes}m")
+            else:
+                logger.info(f"⏳ Tempo estimado de download: ~{est_minutes}m")
+                
+            logger.info(f"⏸️  Delay entre downloads: {download_delay}s")
+
+            # Pré-checagem de legendas por vídeo (quando solicitado)
+            per_video_lang_choice: Dict[str, List[str]] = {}
+            requested_langs = subtitle_languages or []
             
-            # Get list of downloaded files
-            for file in os.listdir(output_dir):
-                file_path = os.path.join(output_dir, file)
-                if os.path.isfile(file_path):
-                    downloaded_files.append(file_path)
-                    logger.debug(f"Downloaded: {file_path}")
+            if download_subtitles and requested_langs and interactive:
+                logger.info("=" * 60)
+                logger.info("🔎 Verificando disponibilidade de legendas...")
+                logger.info("=" * 60)
+                
+                videos_missing_subtitles = []
+                
+                for idx, entry in enumerate(entries, 1):
+                    title = entry.get('title', f"video_{idx}")
+                    video_id = entry.get('id', str(idx))
+                    available = _subtitle_langs_in_entry(entry)
+                    
+                    if not available:
+                        videos_missing_subtitles.append((idx, entry, available))
+                        per_video_lang_choice[video_id] = []
+                        logger.info(f"  ❌ {idx}. {title}: sem legendas")
+                        continue
+                    
+                    # Tentar casar idiomas solicitados com disponíveis
+                    chosen_langs: List[str] = []
+                    for req in requested_langs:
+                        match = _match_requested_lang(available, [req])
+                        if match and match not in chosen_langs:
+                            chosen_langs.append(match)
+                    
+                    if chosen_langs:
+                        per_video_lang_choice[video_id] = chosen_langs
+                        logger.info(f"  ✅ {idx}. {title}: encontrados {', '.join(chosen_langs)}")
+                    else:
+                        videos_missing_subtitles.append((idx, entry, available))
+                        per_video_lang_choice[video_id] = []
+                        logger.info(f"  ⚠️  {idx}. {title}: idiomas solicitados não encontrados")
+                
+                # Prompt interativo para vídeos sem os idiomas solicitados
+                if videos_missing_subtitles:
+                    logger.info("=" * 60)
+                    logger.info(f"⚠️  {len(videos_missing_subtitles)} vídeo(s) sem os idiomas solicitados ({', '.join(requested_langs)})")
+                    resp = input("❓ Ver idiomas disponíveis e escolher manualmente? (s/n): ").strip().lower()
+                    
+                    if resp in ['s', 'sim', 'y', 'yes']:
+                        for idx, entry, available in videos_missing_subtitles:
+                            title = entry.get('title', f"video_{idx}")
+                            video_id = entry.get('id', str(idx))
+                            
+                            logger.info("=" * 60)
+                            logger.info(f"🎥 Vídeo {idx}: {title}")
+                            
+                            if not available:
+                                logger.info("  ℹ️  Nenhuma legenda disponível neste vídeo")
+                                use_whisper = input("  🤖 Usar transcrição Whisper AI? (s/n): ").strip().lower()
+                                if use_whisper in ['s', 'sim', 'y', 'yes']:
+                                    per_video_lang_choice[video_id] = ['__WHISPER__']
+                                    logger.info("  ✅ Marcado para transcrição via Whisper")
+                                else:
+                                    per_video_lang_choice[video_id] = []
+                                    logger.info("  ⏭️  Vídeo será pulado")
+                                continue
+                            
+                            # Mostrar legendas disponíveis
+                            manual = [lang for lang, meta in available.items() if meta['type'] == 'manual']
+                            auto = [lang for lang, meta in available.items() if meta['type'] == 'auto']
+                            
+                            logger.info(f"  📝 Manuais: {', '.join(manual) if manual else 'nenhuma'}")
+                            logger.info(f"  🤖 Automáticas: {', '.join(auto) if auto else 'nenhuma'}")
+                            
+                            sel = input("  ➡️  Idiomas desejados (ex: pt-BR,en) ou 'whisper': ").strip()
+                            
+                            if sel.lower() in ['whisper', 'w']:
+                                per_video_lang_choice[video_id] = ['__WHISPER__']
+                                logger.info("  ✅ Marcado para transcrição via Whisper")
+                            elif sel:
+                                requested = [s.strip() for s in sel.split(',') if s.strip()]
+                                chosen = []
+                                for req in requested:
+                                    match = _match_requested_lang(available, [req])
+                                    if match and match not in chosen:
+                                        chosen.append(match)
+                                
+                                if chosen:
+                                    per_video_lang_choice[video_id] = chosen
+                                    logger.info(f"  ✅ Selecionados: {', '.join(chosen)}")
+                                else:
+                                    logger.warning(f"  ⚠️  Nenhum idioma válido em '{sel}'")
+                                    per_video_lang_choice[video_id] = []
+                            else:
+                                per_video_lang_choice[video_id] = []
+                                logger.info("  ⏭️  Nenhum idioma selecionado")
+                    else:
+                        logger.info("➡️  Usando configuração padrão")
             
-            logger.info(f"Downloaded {len(downloaded_files)} files")
+            # Confirmação interativa de prosseguimento
+            if interactive:
+                logger.info("=" * 60)
+                response = input("▶️  Prosseguir com o download? (s/n): ").strip().lower()
+                if response not in ['s', 'sim', 'y', 'yes']:
+                    logger.info("🛑 Download cancelado pelo usuário")
+                    return downloaded
             
-    except yt_dlp.utils.DownloadError as e:
-        logger.error(f"Download error: {e}")
-        raise
+            logger.info("=" * 60)
+            logger.info(f"⬇️  Iniciando downloads...")
+            logger.info("=" * 60)
+
+            # Download sequencial
+            for idx, entry in enumerate(entries, 1):
+                try:
+                    video_url = entry.get('webpage_url') or entry.get('url') or entry.get('id')
+                    video_title = entry.get('title', 'Unknown')
+                    video_id = entry.get('id', str(idx))
+                    logger.info(f"📥 [{idx}/{total_videos}] Baixando: {video_title}")
+                    
+                    # Ajustar idiomas de legendas por vídeo
+                    local_opts = dict(base_opts)
+                    
+                    if download_subtitles and video_id in per_video_lang_choice:
+                        chosen = per_video_lang_choice[video_id]
+                        
+                        if '__WHISPER__' in chosen:
+                            local_opts.update({
+                                'writesubtitles': False,
+                                'writeautomaticsub': False,
+                            })
+                            logger.debug(f"  🤖 Marcado para Whisper (sem download de legendas)")
+                        elif chosen:
+                            local_opts.update({
+                                'writesubtitles': True,
+                                'writeautomaticsub': True,
+                                'subtitleslangs': chosen,
+                                'subtitlesformat': 'srt',
+                            })
+                            logger.debug(f"  📝 Baixando legendas: {', '.join(chosen)}")
+                    
+                    with yt_dlp.YoutubeDL(local_opts) as ydl_single:
+                        ydl_single.download([video_url])
+                    
+                    logger.info(f"✅ [{idx}/{total_videos}] Download concluído: {video_title}")
+                    
+                    if idx < total_videos and download_delay > 0:
+                        import time
+                        logger.info(f"⏸️  Aguardando {download_delay}s...")
+                        time.sleep(download_delay)
+                        
+                except Exception as e:
+                    logger.error(f"❌ [{idx}/{total_videos}] Falha: {video_title} - {str(e)[:100]}")
+                    continue
+
+            # Particionar arquivos baixados
+            files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+            media_files = []
+            srt_files = []
+
+            for fname in files:
+                ext = Path(fname).suffix.lower()
+                if ext == '.srt':
+                    srt_files.append(fname)
+                elif ext in SUPPORTED_MEDIA_EXTS:
+                    media_files.append(fname)
+
+            for fname in media_files:
+                path = os.path.join(output_dir, fname)
+                stem = Path(fname).stem
+                downloaded.append({
+                    'file_path': path,
+                    'stem': stem,
+                    'subtitles_found': False
+                })
+
+            for item in downloaded:
+                prefix = item['stem']
+                related = [s for s in srt_files if s.startswith(prefix)]
+                if related:
+                    item['subtitles_found'] = True
+                    item['subtitle_files'] = [os.path.join(output_dir, r) for r in related]
+
+            logger.info(f"✅ Arquivos de mídia: {len(downloaded)}")
+            logger.info(f"📝 Arquivos de legenda: {len(srt_files)}")
     except Exception as e:
-        logger.error(f"Unexpected error during download: {e}")
+        logger.error(f"❌ Erro no download: {e}")
         raise
-    
-    return downloaded_files
+
+    return downloaded
 
 
 def extract_audio(video_path: str, output_dir: str) -> str:
-    """
-    Extract audio from a video file.
-    
-    Args:
-        video_path: Path to the video file
-        output_dir: Directory to save the extracted audio
-        
-    Returns:
-        Path to the extracted audio file
-    """
+    """Extract audio from a video file using ffmpeg (no pydub dependency)."""
     os.makedirs(output_dir, exist_ok=True)
-    
     video_name = Path(video_path).stem
     audio_path = os.path.join(output_dir, f"{video_name}.mp3")
-    
+
+    logger.info(f"🎵 Extraindo áudio: {Path(video_path).name}")
+    cmd = [
+        'ffmpeg', '-y', '-i', video_path,
+        '-vn',
+        '-acodec', 'libmp3lame',
+        '-qscale:a', '4',
+        audio_path
+    ]
     try:
-        logger.info(f"Extracting audio from: {video_path}")
-        audio = AudioSegment.from_file(video_path)
-        audio.export(audio_path, format="mp3")
-        logger.info(f"Audio extracted to: {audio_path}")
+        subprocess.run(cmd, capture_output=True, check=True)
+        logger.info(f"✅ Áudio extraído: {Path(audio_path).name}")
         return audio_path
-    except Exception as e:
-        logger.error(f"Failed to extract audio from {video_path}: {e}")
-        raise
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ Falha na extração de áudio: {e.stderr.decode(errors='ignore')[:300]}")
+        raise RuntimeError(f"Failed to extract audio via ffmpeg: {e}")
 
 
 def convert_audio_to_mono_64kbps(
@@ -155,45 +433,30 @@ def convert_audio_to_mono_64kbps(
     output_dir: str,
     keep_original: bool = False
 ) -> str:
-    """
-    Convert audio file to mp3 64kbps mono format.
-    
-    Args:
-        audio_path: Path to the input audio file
-        output_dir: Directory to save the converted audio
-        keep_original: If True, keep original format without conversion
-        
-    Returns:
-        Path to the converted (or original) audio file
-    """
+    """Convert audio file to mp3 64kbps mono using ffmpeg."""
     if keep_original:
-        logger.info(f"Keeping original audio format: {audio_path}")
+        logger.info(f"✅ Mantendo áudio original: {Path(audio_path).name}")
         return audio_path
-    
+
     os.makedirs(output_dir, exist_ok=True)
-    
     audio_name = Path(audio_path).stem
     converted_path = os.path.join(output_dir, f"{audio_name}_64kbps_mono.mp3")
-    
+
+    logger.info(f"🔄 Convertendo para 64kbps mono: {Path(audio_path).name}")
+    cmd = [
+        'ffmpeg', '-y', '-i', audio_path,
+        '-ac', '1',
+        '-b:a', '64k',
+        '-vn',
+        converted_path
+    ]
     try:
-        logger.info(f"Converting audio to 64kbps mono: {audio_path}")
-        audio = AudioSegment.from_file(audio_path)
-        
-        # Convert to mono
-        audio = audio.set_channels(1)
-        
-        # Export with 64kbps bitrate
-        audio.export(
-            converted_path,
-            format="mp3",
-            bitrate="64k"
-        )
-        
-        logger.info(f"Audio converted to: {converted_path}")
+        subprocess.run(cmd, capture_output=True, check=True)
+        logger.info(f"✅ Áudio convertido: {Path(converted_path).name}")
         return converted_path
-    except Exception as e:
-        logger.error(f"Failed to convert audio {audio_path}: {e}")
-        raise
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ Falha na conversão: {e.stderr.decode(errors='ignore')[:300]}")
+        raise RuntimeError(f"Failed to convert audio via ffmpeg: {e}")
 
 
 def process_playlist(
@@ -203,31 +466,16 @@ def process_playlist(
     audio_only: bool = False,
     keep_original_audio: bool = False,
     skip_transcription: bool = False,
-    language: str = None,
-    verbose: bool = False
+    language: Optional[str] = None,
+    verbose: bool = False,
+    prefer_existing_subtitles: bool = False,
+    subtitle_languages: Optional[list[str]] = None,
+    download_delay: int = 5,
+    interactive: bool = False
 ) -> list[dict]:
-    """
-    Process a YouTube playlist: download, extract audio, convert, transcribe, and generate SRT.
-    
-    Transcription and SRT generation is delegated to mywhisper module for better
-    decoupling between video download and transcription responsibilities.
-    
-    Args:
-        playlist_url: URL of the YouTube playlist
-        output_dir: Base output directory
-        api_key: OpenAI API key
-        audio_only: Download only audio
-        keep_original_audio: Keep original audio format
-        skip_transcription: Skip transcription step
-        language: Language code for transcription (e.g., 'en', 'pt', 'es')
-        verbose: Enable verbose logging
-        
-    Returns:
-        List of results for each processed video
-    """
+    """Process a YouTube playlist: download, extract audio, convert, transcribe, and generate SRT."""
     results = []
     
-    # Create directory structure
     downloads_dir = os.path.join(output_dir, "downloads")
     audio_dir = os.path.join(output_dir, "audio")
     converted_dir = os.path.join(output_dir, "converted")
@@ -237,90 +485,151 @@ def process_playlist(
         os.makedirs(directory, exist_ok=True)
     
     try:
-        # Step 1: Download playlist
-        logger.info("=" * 50)
-        logger.info("Step 1: Downloading playlist")
-        logger.info("=" * 50)
-        
-        downloaded_files = download_playlist(
+        logger.info("=" * 60)
+        logger.info("📋 ETAPA 1: Download da Playlist")
+        logger.info("=" * 60)
+
+        downloaded_items = download_playlist(
             playlist_url,
             downloads_dir,
-            audio_only=audio_only
+            audio_only=audio_only,
+            download_subtitles=prefer_existing_subtitles,
+            subtitle_languages=subtitle_languages,
+            download_delay=download_delay,
+            interactive=interactive
         )
-        
-        if not downloaded_files:
-            logger.warning("No files were downloaded")
+
+        if not downloaded_items:
+            logger.warning("⚠️  Nenhum arquivo foi baixado")
             return results
+
+        total_items = len(downloaded_items)
         
-        # Process each downloaded file
-        for file_path in downloaded_files:
+        for idx, item in enumerate(downloaded_items, 1):
+            file_path = item['file_path']
+            file_name = Path(file_path).stem
+            
+            logger.info("=" * 60)
+            logger.info(f"🎬 PROCESSANDO [{idx}/{total_items}]: {file_name}")
+            logger.info("=" * 60)
+            
             result = {
                 'original_file': file_path,
                 'audio_file': None,
                 'converted_file': None,
                 'srt_file': None,
-                'status': 'pending'
+                'status': 'pending',
+                'used_existing_subtitles': False,
+                'used_whisper': False
             }
-            
+
             try:
-                file_name = Path(file_path).stem
-                
-                # Step 2: Extract audio (if not audio_only)
-                if audio_only:
-                    audio_path = file_path
-                    result['audio_file'] = audio_path
-                else:
-                    logger.info("=" * 50)
-                    logger.info(f"Step 2: Extracting audio from {file_name}")
-                    logger.info("=" * 50)
-                    
-                    audio_path = extract_audio(file_path, audio_dir)
-                    result['audio_file'] = audio_path
-                
-                # Step 3: Convert audio
-                logger.info("=" * 50)
-                logger.info(f"Step 3: Converting audio for {file_name}")
-                logger.info("=" * 50)
-                
-                converted_path = convert_audio_to_mono_64kbps(
-                    audio_path,
-                    converted_dir,
-                    keep_original=keep_original_audio
+                # Verificar se vai usar legendas existentes antes de processar áudio
+                will_use_existing_subs = (
+                    prefer_existing_subtitles and 
+                    item.get('subtitles_found') and 
+                    not skip_transcription
                 )
-                result['converted_file'] = converted_path
                 
-                # Step 4: Transcribe audio and generate SRT using mywhisper
+                # Step 4: Legendagem (verificação antecipada)
                 if not skip_transcription:
-                    logger.info("=" * 50)
-                    logger.info(f"Step 4: Transcribing audio and generating SRT for {file_name}")
-                    logger.info("=" * 50)
+                    logger.info("📝 ETAPA 2: Geração de Legendas")
                     
-                    srt_path = os.path.join(srt_dir, f"{file_name}.srt")
-                    
-                    # Use mywhisper's transcribe_audio_to_srt for transcription
-                    transcribe_audio_to_srt(
-                        audio_path=converted_path,
-                        output_path=srt_path,
-                        api_key=api_key,
-                        language=language,
-                        verbose=verbose
-                    )
-                    result['srt_file'] = srt_path
-                
+                    if will_use_existing_subs:
+                        logger.info("🔍 Verificando legendas existentes...")
+                        srt_files = item['subtitle_files']
+                        copied_srts = []
+                        
+                        for src in srt_files:
+                            src_name = Path(src).name
+                            dst = os.path.join(srt_dir, src_name)
+                            shutil.copyfile(src, dst)
+                            copied_srts.append(dst)
+                            logger.info(f"  ✅ Copiada: {src_name}")
+                        
+                        chosen = None
+                        if subtitle_languages:
+                            variants_list = [_normalize_lang_variants(lg) for lg in subtitle_languages]
+                            def matches_lang(fname: str, variants: list[str]) -> bool:
+                                name = Path(fname).name.lower()
+                                return any((f".{v}.srt" in name) or (f".{v}." in name) for v in variants)
+                            manual = [f for f in copied_srts if '.auto.' not in Path(f).name.lower()]
+                            auto = [f for f in copied_srts if '.auto.' in Path(f).name.lower()]
+                            for variants in variants_list:
+                                for sf in manual:
+                                    if matches_lang(sf, variants):
+                                        chosen = sf
+                                        break
+                                if chosen:
+                                    break
+                                for sf in auto:
+                                    if matches_lang(sf, variants):
+                                        chosen = sf
+                                        break
+                                if chosen:
+                                    break
+                        
+                        chosen = chosen or (copied_srts[0] if copied_srts else None)
+                        
+                        result['srt_file'] = chosen
+                        result['used_existing_subtitles'] = True
+                        result['used_whisper'] = False
+                        logger.info(f"✅ Legendas copiadas: {len(copied_srts)} arquivo(s)")
+                        if chosen:
+                            logger.info(f"📌 Legenda principal: {Path(chosen).name}")
+                        logger.info("⏭️  Pulando extração/conversão de áudio (não necessário)")
+                    else:
+                        # Precisa do Whisper: extrair e converter áudio
+                        logger.info("🤖 Legendas não encontradas, preparando para Whisper...")
+                        
+                        # Step 2: Audio extraction
+                        if audio_only:
+                            audio_path = file_path
+                            logger.info("✅ Usando arquivo de áudio direto")
+                        else:
+                            logger.info("🎵 ETAPA 2.1: Extração de Áudio")
+                            audio_path = extract_audio(file_path, audio_dir)
+                        result['audio_file'] = audio_path
+
+                        # Step 3: Convert
+                        logger.info("🔄 ETAPA 2.2: Conversão de Áudio")
+                        converted_path = convert_audio_to_mono_64kbps(
+                            audio_path,
+                            converted_dir,
+                            keep_original=keep_original_audio
+                        )
+                        result['converted_file'] = converted_path
+                        
+                        # Transcribe
+                        logger.info("🤖 Enviando para OpenAI Whisper...")
+                        srt_path = os.path.join(srt_dir, f"{file_name}.whisper.srt")
+                        transcribe_audio_to_srt(
+                            audio_path=converted_path,
+                            output_path=srt_path,
+                            api_key=api_key,
+                            language=language,
+                            verbose=verbose
+                        )
+                        result['srt_file'] = srt_path
+                        result['used_whisper'] = True
+                        result['used_existing_subtitles'] = False
+                        logger.info(f"✅ Transcrição salva: {Path(srt_path).name}")
+                else:
+                    logger.info("⏭️  Transcrição desabilitada (--skip-transcription)")
+
                 result['status'] = 'success'
-                logger.info(f"Successfully processed: {file_name}")
+                logger.info(f"✅ Processamento concluído: {file_name}")
                 
             except Exception as e:
                 result['status'] = 'error'
                 result['error'] = str(e)
-                logger.error(f"Failed to process {file_path}: {e}")
-            
+                logger.error(f"❌ Falha no processamento: {str(e)[:200]}")
+
             results.append(result)
-        
+            
         return results
-        
     except Exception as e:
-        logger.error(f"Failed to process playlist: {e}")
+        logger.error(f"❌ Erro fatal no processamento: {e}")
         raise
 
 
@@ -345,6 +654,9 @@ Examples:
 
   # Skip transcription (download and convert only)
   %(prog)s --url "https://youtube.com/playlist?list=..." --skip-transcription
+  
+  # Interactive mode with confirmation prompt
+  %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --interactive
         """
     )
     
@@ -400,36 +712,61 @@ Examples:
         help='Enable verbose logging'
     )
     
+    parser.add_argument(
+        '--prefer-existing-subtitles',
+        action='store_true',
+        help='Tentar usar legendas já existentes do vídeo (manuais ou automáticas) e pular Whisper se encontradas'
+    )
+    
+    parser.add_argument(
+        '--subtitle-languages',
+        type=str,
+        default=None,
+        help='Lista de idiomas para buscar legendas existentes (ex: "pt,en"). Default interno: pt,en'
+    )
+    
+    parser.add_argument(
+        '--download-delay',
+        type=int,
+        default=5,
+        help='Delay em segundos entre downloads de vídeos para evitar rate-limiting (default: 5s)'
+    )
+    
+    parser.add_argument(
+        '-i', '--interactive',
+        action='store_true',
+        help='Modo interativo: exibe prévia da playlist e aguarda confirmação antes de iniciar'
+    )
+    
     return parser.parse_args()
 
 
 def main() -> int:
     """Main entry point."""
     args = parse_arguments()
-    
-    # Setup logging
     setup_logging(args.verbose)
     
     logger.info("=" * 60)
-    logger.info("YouTube Playlist Summary Tool")
+    logger.info("🎬 YouTube Playlist Summary Tool")
     logger.info("=" * 60)
     
-    # Validate API key
     if not args.skip_transcription and not args.api_key:
-        logger.error("OpenAI API key is required for transcription. "
-                    "Use --api-key or set OPENAI_API_KEY environment variable. "
-                    "Or use --skip-transcription to skip transcription.")
+        logger.error("❌ Chave OpenAI necessária para transcrição")
+        logger.error("   Use --api-key ou OPENAI_API_KEY")
+        logger.error("   Ou use --skip-transcription")
         return 1
     
-    # Log configuration
-    logger.info(f"Playlist URL: {args.url}")
-    logger.info(f"Output directory: {args.output}")
-    logger.info(f"Audio only: {args.audio_only}")
-    logger.info(f"Keep original audio: {args.keep_original}")
-    logger.info(f"Language: {args.language or 'auto-detect'}")
-    logger.info(f"Skip transcription: {args.skip_transcription}")
+    logger.info(f"🔗 URL: {args.url}")
+    logger.info(f"📁 Diretório de saída: {args.output}")
+    logger.info(f"🎵 Somente áudio: {args.audio_only}")
+    logger.info(f"💾 Manter áudio original: {args.keep_original}")
+    logger.info(f"🌍 Idioma: {args.language or 'auto-detect'}")
+    logger.info(f"⏭️  Pular transcrição: {args.skip_transcription}")
+    logger.info(f"⏸️  Delay: {args.download_delay}s")
+    logger.info(f"🤝 Modo interativo: {args.interactive}")
     
     try:
+        subtitle_langs = args.subtitle_languages.split(',') if args.subtitle_languages else None
         results = process_playlist(
             playlist_url=args.url,
             output_dir=args.output,
@@ -438,31 +775,42 @@ def main() -> int:
             keep_original_audio=args.keep_original,
             skip_transcription=args.skip_transcription,
             language=args.language,
-            verbose=args.verbose
+            verbose=args.verbose,
+            prefer_existing_subtitles=args.prefer_existing_subtitles,
+            subtitle_languages=subtitle_langs,
+            download_delay=args.download_delay,
+            interactive=args.interactive
         )
         
-        # Print summary
         logger.info("=" * 60)
-        logger.info("Processing Summary")
+        logger.info("📊 RESUMO DO PROCESSAMENTO")
         logger.info("=" * 60)
         
         success_count = sum(1 for r in results if r['status'] == 'success')
         error_count = sum(1 for r in results if r['status'] == 'error')
+        whisper_count = sum(1 for r in results if r.get('used_whisper', False))
+        existing_subs_count = sum(1 for r in results if r.get('used_existing_subtitles', False))
         
-        logger.info(f"Total files processed: {len(results)}")
-        logger.info(f"Successful: {success_count}")
-        logger.info(f"Errors: {error_count}")
+        logger.info(f"📝 Total processado: {len(results)}")
+        logger.info(f"✅ Sucesso: {success_count}")
+        logger.info(f"❌ Erros: {error_count}")
+        logger.info(f"🤖 Transcritos via Whisper: {whisper_count}")
+        logger.info(f"📋 Legendas existentes usadas: {existing_subs_count}")
         
         if error_count > 0:
-            logger.warning("Some files failed to process:")
+            logger.warning("⚠️  Alguns arquivos falharam:")
             for r in results:
                 if r['status'] == 'error':
-                    logger.warning(f"  - {r['original_file']}: {r.get('error', 'Unknown error')}")
+                    logger.warning(f"  • {Path(r['original_file']).name}: {r.get('error', 'Unknown')[:100]}")
+        
+        logger.info("=" * 60)
+        logger.info("✨ Concluído!")
+        logger.info("=" * 60)
         
         return 0 if error_count == 0 else 1
         
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.error(f"❌ Erro fatal: {e}")
         return 1
 
 
