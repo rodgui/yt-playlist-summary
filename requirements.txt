@@ -1,3 +1,4 @@
 yt-dlp>=2024.11.18
 openai>=1.54.5
 pydub>=0.25.1
+python-dotenv>=1.0.0
