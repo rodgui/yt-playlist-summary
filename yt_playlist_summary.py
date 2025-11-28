@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 import shutil
+import re
 
 import yt_dlp
 import subprocess
@@ -48,6 +49,55 @@ SUPPORTED_MEDIA_EXTS = {
     '.mp4', '.mkv', '.webm',
     '.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'
 }
+
+def _sanitize_base_title(title: str) -> str:
+    """
+    Normaliza o título mantendo ':' e removendo caracteres problemáticos.
+    Substitui / e \ por ' - ' e comprime espaços.
+    """
+    t = (title or '').replace('：', ':')  # converte dois-pontos "fullwidth" para ':'
+    t = t.replace('/', ' - ').replace('\\', ' - ')
+    # remove caracteres geralmente problemáticos, mantendo ':'
+    t = re.sub(r'[<>\"|\?\*]', '', t)
+    # comprime espaços
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    return t
+
+def _ensure_unique_path(path: str) -> str:
+    """Garante nome único adicionando sufixo (n) se já existir."""
+    if not os.path.exists(path):
+        return path
+    base = Path(path).with_suffix('')
+    ext = Path(path).suffix
+    n = 1
+    while True:
+        candidate = f"{base} ({n}){ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+def _rename_downloads_to_desired_names(output_dir: str, id_to_desired: Dict[str, str]) -> None:
+    """
+    Renomeia arquivos baixados que começam com <id>.* para <idx>. <titulo>.*,
+    preservando sufixos de idioma das legendas (ex: .pt-BR.srt).
+    """
+    files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+
+    # Trabalhar id a id para evitar conflito de nomes
+    for vid, desired_base in id_to_desired.items():
+        for fname in list(files):
+            if not fname.startswith(vid + "."):
+                continue
+            old_path = os.path.join(output_dir, fname)
+            # resto inclui .ext ou .<lang>.srt
+            rest = fname[len(vid):]  # começa com '.'
+            new_name = f"{desired_base}{rest}"
+            new_path = os.path.join(output_dir, new_name)
+            new_path = _ensure_unique_path(new_path)
+            os.rename(old_path, new_path)
+            # atualizar lista local para evitar reprocessar
+            files.remove(fname)
+            files.append(Path(new_path).name)
 
 def _normalize_lang_variants(lang: str) -> list[str]:
     """
@@ -122,19 +172,19 @@ def download_playlist(
     """
     Download videos (and opcionalmente legendas) de uma playlist.
     Retorna lista de dicts com caminho e info de legendas.
-    
-    Args:
-        download_delay: Delay em segundos entre downloads (default: 5s)
-        interactive: Se True, aguarda confirmação do usuário antes de iniciar downloads
     """
     downloaded = []
     os.makedirs(output_dir, exist_ok=True)
 
     base_opts = {
-        'outtmpl': os.path.join(output_dir, '%(playlist_index)s_%(title)s.%(ext)s'),
+        # Usar ID no nome para renomear com precisão depois
+        'outtmpl': {
+            'default': os.path.join(output_dir, '%(id)s.%(ext)s'),
+            'subtitle': os.path.join(output_dir, '%(id)s.%(subtitle_language)s.%(ext)s'),
+        },
         'ignoreerrors': True,
-        'no_warnings': True,  # Suprimir warnings do yt-dlp
-        'quiet': True,  # Modo silencioso do yt-dlp
+        'no_warnings': True,
+        'quiet': True,
         'extract_flat': False,
         'progress_hooks': [lambda d: logger.debug(f"Download progress: {d.get('status', 'unknown')}")],
         'sleep_interval': download_delay,
@@ -170,7 +220,6 @@ def download_playlist(
     try:
         logger.info("🔍 Consultando playlist no YouTube...")
         with yt_dlp.YoutubeDL(base_opts) as ydl:
-            # Extrair metadados apenas uma vez
             info = ydl.extract_info(playlist_url, download=False)
             if info is None:
                 logger.error("❌ Falha ao extrair informações da playlist")
@@ -179,6 +228,21 @@ def download_playlist(
             entries = info['entries'] if 'entries' in info else [info]
             entries = [e for e in entries if e]
             total_videos = len(entries)
+
+            # Mapa ID -> nome desejado "<idx>. <título normalizado>"
+            id_to_desired: Dict[str, str] = {}
+            logger.info("=" * 60)
+            logger.info(f"✅ Playlist encontrada: {total_videos} vídeo(s)")
+            logger.info("=" * 60)
+            for idx, entry in enumerate(entries, 1):
+                title = entry.get('title', 'Unknown')
+                duration = entry.get('duration', 0)
+                duration_str = f"{duration//60}:{duration%60:02d}" if duration else "N/A"
+                safe_title = _sanitize_base_title(title)
+                desired_name = f"{idx}. {safe_title}"
+                vid = entry.get('id', str(idx))
+                id_to_desired[vid] = desired_name
+                logger.info(f"  {idx}. {title} ({duration_str})")
             
             # Calcular tempo total estimado
             total_duration = sum(e.get('duration', 0) for e in entries)
@@ -367,6 +431,9 @@ def download_playlist(
                 except Exception as e:
                     logger.error(f"❌ [{idx}/{total_videos}] Falha: {video_title} - {str(e)[:100]}")
                     continue
+
+            # Renomear todos os arquivos baixados de <id>.* para "<idx>. <título>.*"
+            _rename_downloads_to_desired_names(output_dir, id_to_desired)
 
             # Particionar arquivos baixados
             files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
