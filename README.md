@@ -6,6 +6,7 @@ Ferramenta em Python para:
 - Transcrever via OpenAI Whisper
 - Gerar legendas SRT
 - Traduzir SRT existente via GPT-4.1-mini
+- **Gerar material de estudo consolidado** a partir das legendas da playlist
 
 ## Requisitos
 
@@ -102,11 +103,64 @@ Mensagens de etapa:
 - No Python 3.14, `audioop` foi removido; usamos ffmpeg puro (sem `pydub`).
 - Para playlists muito grandes, use `--download-delay` para evitar bloqueios.
 
+## Geração de Material de Estudo
+
+Após processar uma playlist e obter as legendas (via YouTube ou Whisper), você pode gerar um material de estudo consolidado usando GPT-4.1-mini:
+
+### 5) Gerar material de estudo a partir de legendas existentes
+
+```bash
+python generate_study_material.py \
+  --subtitle-dir ./output/subtitles \
+  --api-key "$OPENAI_API_KEY" \
+  --output material_estudo.md
+```
+
+**O que faz:**
+- Lê todos os arquivos `.srt` do diretório
+- Consolida as transcrições em ordem cronológica
+- Envia para GPT-4.1-mini com prompt educacional estruturado
+- Gera material com:
+  - Resumo executivo da playlist
+  - Conceitos-chave explicados
+  - Análise por vídeo (resumo, pontos principais, exemplos)
+  - Exemplos práticos consolidados
+  - Pontos de ação (checklist)
+  - Glossário de termos técnicos
+  - Referências com timestamps
+
+**Opções úteis:**
+- `-l/--language pt|en` - idioma do material (default: pt)
+- `--skip-gpt` - apenas consolida texto, sem enviar para GPT
+- `-i/--interactive` - pede confirmação para playlists grandes (>50k tokens)
+- `-v/--verbose` - logging detalhado
+
+**Integração com pipeline principal:**
+```bash
+# Processar playlist E gerar material de estudo automaticamente
+python yt_playlist_summary.py \
+  --url "PLAYLIST_URL" \
+  --api-key "$OPENAI_API_KEY" \
+  --generate-study-material \
+  --study-language pt
+```
+
+**Estimativa de custos:**
+- O script calcula tokens antes de enviar
+- GPT-4.1-mini: ~$0.15 por milhão de tokens (entrada) + ~$0.60 (saída)
+- Playlist típica (5-10 vídeos): ~$0.02-0.05 USD
+- Playlists grandes (>20 vídeos): modo interativo recomendado
+
+**Arquivos gerados:**
+- `study_material_TIMESTAMP.md` - material final processado por IA
+- `study_material_TIMESTAMP_consolidated.md` - transcrições brutas (backup)
+
 ## Desenvolvimento
 
 - `yt_playlist_summary.py`: orquestra pipeline (download → extração → conversão → transcrição/SRT).
 - `mywhisper.py`: transcrição e rotinas de legenda/translation.
 - `translate_sub.py`: tradução de SRT com GPT-4.1-mini.
+- `generate_study_material.py`: geração de material educacional consolidado via GPT.
 
 Mantenha a separação de responsabilidades; novas funcionalidades de texto/legenda devem residir em módulos dedicados (ex.: `mywhisper.py` ou scripts como `translate_sub.py`).
 
@@ -170,7 +224,25 @@ python translate_sub.py \
 # Saída: ./output/subtitles/01_Titulo1.pt-BR.translated.en.srt
 ```
 
+Gerar material de estudo após processar:
+```bash
+# Opção 1: Integrado ao pipeline principal
+python yt_playlist_summary.py \
+  --url "https://www.youtube.com/playlist?list=EXEMPLO" \
+  --prefer-existing-subtitles \
+  --subtitle-languages "pt-BR,en" \
+  --api-key "$OPENAI_API_KEY" \
+  --generate-study-material
+
+# Opção 2: Processar legendas já existentes
+python generate_study_material.py \
+  --subtitle-dir ./output/subtitles \
+  --api-key "$OPENAI_API_KEY" \
+  -i
+```
+
 Dicas:
 - Sem `-v` os warnings do yt-dlp são suprimidos; com `-v` você vê detalhes da extração.
 - Se não quiser usar Whisper, passe `--skip-transcription` (vídeos sem legendas ficarão sem SRT).
 - Ajuste `--download-delay` para reduzir risco de rate-limiting em playlists grandes.
+- Use `--generate-study-material` para criar automaticamente material educacional consolidado ao final.
