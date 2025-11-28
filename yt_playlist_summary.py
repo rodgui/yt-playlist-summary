@@ -261,6 +261,12 @@ def generate_srt(transcription: dict, output_path: str) -> str:
     Returns:
         Path to the generated SRT file
     """
+    def get_segment_value(segment, key: str, default=None):
+        """Helper to extract value from segment (dict or object)."""
+        if isinstance(segment, dict):
+            return segment.get(key, default)
+        return getattr(segment, key, default)
+    
     try:
         logger.info(f"Generating SRT file: {output_path}")
         
@@ -270,9 +276,9 @@ def generate_srt(transcription: dict, output_path: str) -> str:
         segments = getattr(transcription, 'segments', None) or []
         
         for i, segment in enumerate(segments, 1):
-            start_time = segment.get('start', 0) if isinstance(segment, dict) else getattr(segment, 'start', 0)
-            end_time = segment.get('end', 0) if isinstance(segment, dict) else getattr(segment, 'end', 0)
-            text = segment.get('text', '').strip() if isinstance(segment, dict) else getattr(segment, 'text', '').strip()
+            start_time = get_segment_value(segment, 'start', 0)
+            end_time = get_segment_value(segment, 'end', 0)
+            text = (get_segment_value(segment, 'text', '') or '').strip()
             
             start_formatted = format_timestamp(start_time)
             end_formatted = format_timestamp(end_time)
