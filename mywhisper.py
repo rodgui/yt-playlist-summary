@@ -679,6 +679,107 @@ def cleanup_temp_files(logger: logging.Logger) -> None:
         logger.debug("✓ Temporary files cleaned")
 
 
+def transcribe_audio_to_srt(
+    audio_path: str,
+    output_path: Optional[str] = None,
+    api_key: Optional[str] = None,
+    language: Optional[str] = None,
+    translate_to: Optional[str] = None,
+    chunk_duration: int = DEFAULT_CHUNK_DURATION,
+    clear_cache: bool = False,
+    verbose: bool = False
+) -> str:
+    """
+    High-level API to transcribe an audio file and generate an SRT subtitle file.
+    
+    This function encapsulates the complete transcription workflow:
+    - Validates the audio file
+    - Splits large files into chunks if needed
+    - Transcribes using OpenAI Whisper API with caching
+    - Generates SRT content with synchronized timestamps
+    - Saves the SRT file
+    
+    Args:
+        audio_path: Path to the input audio file (MP3, M4A, WAV, FLAC, OGG, WEBM)
+        output_path: Path to the output SRT file (default: same as input with .srt extension)
+        api_key: OpenAI API key (default: loaded from OPENAI_API_KEY environment variable)
+        language: Language code for transcription (e.g., 'en', 'pt', 'es'). If None, auto-detect
+        translate_to: Translate the transcription to this language (optional)
+        chunk_duration: Duration of each chunk in minutes for large files (default: 10)
+        clear_cache: Clear cache and force reprocessing of all chunks
+        verbose: Enable verbose logging
+        
+    Returns:
+        Path to the generated SRT file
+        
+    Raises:
+        FileNotFoundError: If the input audio file is not found
+        ValueError: If the API key is not provided and not found in environment
+        RuntimeError: If transcription fails
+    """
+    logger = setup_logging(verbose)
+    
+    # Load environment variables
+    load_dotenv()
+    
+    # Get API key
+    resolved_api_key = api_key or os.getenv('OPENAI_API_KEY')
+    if not resolved_api_key:
+        raise ValueError(
+            "OpenAI API key not found. Please provide it via api_key parameter "
+            "or set OPENAI_API_KEY environment variable"
+        )
+    
+    # Validate input file
+    input_path = validate_audio_file(audio_path, logger)
+    
+    # Determine output path
+    if output_path:
+        srt_output_path = Path(output_path)
+    else:
+        srt_output_path = input_path.with_suffix('.srt')
+    
+    logger.info(f"Output will be saved to: {srt_output_path}")
+    
+    # Generate file hash for caching
+    file_hash = get_file_hash(input_path)
+    logger.debug(f"File hash: {file_hash}")
+    
+    # Get audio duration
+    audio_duration = get_audio_duration(input_path, logger)
+    
+    # Split audio if needed
+    chunks = split_audio_into_chunks(audio_duration, input_path, chunk_duration, logger)
+    
+    try:
+        # Transcribe or translate
+        transcriptions = transcribe_audio(
+            chunks,
+            resolved_api_key,
+            language,
+            translate_to,
+            file_hash,
+            clear_cache,
+            logger
+        )
+        
+        # Generate SRT
+        srt_content = generate_srt(transcriptions, chunk_duration, logger)
+        
+        # Save SRT file
+        logger.info("Saving SRT file...")
+        with open(srt_output_path, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+        
+        logger.info(f"✓ Completed! SRT file saved: {srt_output_path.absolute()}")
+        
+        return str(srt_output_path)
+        
+    finally:
+        # Always cleanup temporary files
+        cleanup_temp_files(logger)
+
+
 def main():
     """Main application entry point."""
     args = parse_arguments()

@@ -3,8 +3,8 @@
 YouTube Playlist Summary Tool
 
 A solution that receives a YouTube playlist URL, downloads videos,
-extracts audio, converts to mp3, transcribes using OpenAI Whisper API,
-and generates SRT subtitle files.
+extracts audio, converts to mp3, and uses mywhisper for transcription
+and SRT subtitle generation.
 """
 
 import argparse
@@ -12,11 +12,12 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yt_dlp
-from openai import OpenAI
 from pydub import AudioSegment
+
+# Import transcription functionality from mywhisper
+from mywhisper import transcribe_audio_to_srt
 
 # Configure logging
 logging.basicConfig(
@@ -195,130 +196,21 @@ def convert_audio_to_mono_64kbps(
         raise
 
 
-def transcribe_audio(
-    audio_path: str,
-    api_key: str,
-    model: str = "whisper-1"
-) -> dict:
-    """
-    Transcribe audio using OpenAI Whisper API.
-    
-    Args:
-        audio_path: Path to the audio file
-        api_key: OpenAI API key
-        model: Whisper model to use
-        
-    Returns:
-        Transcription response from OpenAI API
-    """
-    try:
-        logger.info(f"Transcribing audio: {audio_path}")
-        logger.debug(f"Using model: {model}")
-        
-        client = OpenAI(api_key=api_key)
-        
-        with open(audio_path, "rb") as audio_file:
-            response = client.audio.transcriptions.create(
-                model=model,
-                file=audio_file,
-                response_format="verbose_json",
-                timestamp_granularities=["segment"]
-            )
-        
-        logger.info("Transcription completed successfully")
-        return response
-    except Exception as e:
-        logger.error(f"Failed to transcribe audio {audio_path}: {e}")
-        raise
-
-
-def format_timestamp(seconds: float) -> str:
-    """
-    Format seconds to SRT timestamp format (HH:MM:SS,mmm).
-    
-    Args:
-        seconds: Time in seconds
-        
-    Returns:
-        Formatted timestamp string
-    """
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    milliseconds = int((seconds % 1) * 1000)
-    
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
-
-
-def generate_srt(transcription: dict, output_path: str) -> str:
-    """
-    Generate SRT subtitle file from transcription.
-    
-    Args:
-        transcription: Transcription response from OpenAI
-        output_path: Path to save the SRT file
-        
-    Returns:
-        Path to the generated SRT file
-    """
-    def get_segment_value(segment, key: str, default=None):
-        """Helper to extract value from segment (dict or object)."""
-        if isinstance(segment, dict):
-            return segment.get(key, default)
-        return getattr(segment, key, default)
-    
-    try:
-        logger.info(f"Generating SRT file: {output_path}")
-        
-        srt_content = []
-        
-        # Extract segments from transcription
-        segments = getattr(transcription, 'segments', None) or []
-        
-        for i, segment in enumerate(segments, 1):
-            start_time = get_segment_value(segment, 'start', 0)
-            end_time = get_segment_value(segment, 'end', 0)
-            text = (get_segment_value(segment, 'text', '') or '').strip()
-            
-            start_formatted = format_timestamp(start_time)
-            end_formatted = format_timestamp(end_time)
-            
-            srt_content.append(f"{i}")
-            srt_content.append(f"{start_formatted} --> {end_formatted}")
-            srt_content.append(text)
-            srt_content.append("")
-        
-        # If no segments, use full text as single subtitle
-        if not segments:
-            text = getattr(transcription, 'text', '') or ''
-            if text:
-                srt_content.append("1")
-                srt_content.append("00:00:00,000 --> 00:00:10,000")
-                srt_content.append(text.strip())
-                srt_content.append("")
-        
-        # Write SRT file
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(srt_content))
-        
-        logger.info(f"SRT file generated: {output_path}")
-        return output_path
-    except Exception as e:
-        logger.error(f"Failed to generate SRT file: {e}")
-        raise
-
-
 def process_playlist(
     playlist_url: str,
     output_dir: str,
     api_key: str,
     audio_only: bool = False,
     keep_original_audio: bool = False,
-    model: str = "whisper-1",
-    skip_transcription: bool = False
+    skip_transcription: bool = False,
+    language: str = None,
+    verbose: bool = False
 ) -> list[dict]:
     """
     Process a YouTube playlist: download, extract audio, convert, transcribe, and generate SRT.
+    
+    Transcription and SRT generation is delegated to mywhisper module for better
+    decoupling between video download and transcription responsibilities.
     
     Args:
         playlist_url: URL of the YouTube playlist
@@ -326,8 +218,9 @@ def process_playlist(
         api_key: OpenAI API key
         audio_only: Download only audio
         keep_original_audio: Keep original audio format
-        model: Whisper model to use
         skip_transcription: Skip transcription step
+        language: Language code for transcription (e.g., 'en', 'pt', 'es')
+        verbose: Enable verbose logging
         
     Returns:
         List of results for each processed video
@@ -396,25 +289,22 @@ def process_playlist(
                 )
                 result['converted_file'] = converted_path
                 
-                # Step 4: Transcribe audio
+                # Step 4: Transcribe audio and generate SRT using mywhisper
                 if not skip_transcription:
                     logger.info("=" * 50)
-                    logger.info(f"Step 4: Transcribing audio for {file_name}")
-                    logger.info("=" * 50)
-                    
-                    transcription = transcribe_audio(
-                        converted_path,
-                        api_key,
-                        model=model
-                    )
-                    
-                    # Step 5: Generate SRT
-                    logger.info("=" * 50)
-                    logger.info(f"Step 5: Generating SRT for {file_name}")
+                    logger.info(f"Step 4: Transcribing audio and generating SRT for {file_name}")
                     logger.info("=" * 50)
                     
                     srt_path = os.path.join(srt_dir, f"{file_name}.srt")
-                    generate_srt(transcription, srt_path)
+                    
+                    # Use mywhisper's transcribe_audio_to_srt for transcription
+                    transcribe_audio_to_srt(
+                        audio_path=converted_path,
+                        output_path=srt_path,
+                        api_key=api_key,
+                        language=language,
+                        verbose=verbose
+                    )
                     result['srt_file'] = srt_path
                 
                 result['status'] = 'success'
@@ -450,8 +340,8 @@ Examples:
   # Keep original audio format (no conversion)
   %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --keep-original
 
-  # Specify Whisper model
-  %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --model whisper-1
+  # Specify language for transcription
+  %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --language pt
 
   # Skip transcription (download and convert only)
   %(prog)s --url "https://youtube.com/playlist?list=..." --skip-transcription
@@ -480,10 +370,10 @@ Examples:
     )
     
     parser.add_argument(
-        '-m', '--model',
+        '-l', '--language',
         type=str,
-        default='whisper-1',
-        help='Whisper model to use (default: whisper-1)'
+        default=None,
+        help='Language code for transcription (e.g., en, pt, es). If not specified, auto-detect will be used'
     )
     
     parser.add_argument(
@@ -536,7 +426,7 @@ def main() -> int:
     logger.info(f"Output directory: {args.output}")
     logger.info(f"Audio only: {args.audio_only}")
     logger.info(f"Keep original audio: {args.keep_original}")
-    logger.info(f"Whisper model: {args.model}")
+    logger.info(f"Language: {args.language or 'auto-detect'}")
     logger.info(f"Skip transcription: {args.skip_transcription}")
     
     try:
@@ -546,8 +436,9 @@ def main() -> int:
             api_key=args.api_key or '',
             audio_only=args.audio_only,
             keep_original_audio=args.keep_original,
-            model=args.model,
-            skip_transcription=args.skip_transcription
+            skip_transcription=args.skip_transcription,
+            language=args.language,
+            verbose=args.verbose
         )
         
         # Print summary
