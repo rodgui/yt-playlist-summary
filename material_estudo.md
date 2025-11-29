@@ -89,6 +89,6 @@ Este vídeo complementa a introdução anterior, fornecendo um exemplo concreto 
 - **Vídeo 1**: Introdução à atividade de design (Timestamp: 00:00 - 03:00)
 - **Vídeo 2**: Revisão do estudo de caso ClickTravel (Timestamp: 00:00 - 02:30) 
 
---- 
+----
 
 Este material de estudo fornece uma visão abrangente da playlist, ajudando os alunos a entenderem e aplicarem os conceitos discutidos.

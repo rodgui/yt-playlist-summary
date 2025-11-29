@@ -235,6 +235,7 @@ def download_playlist(
             entries = info['entries'] if 'entries' in info else [info]
             entries = [e for e in entries if e]
             total_videos = len(entries)
+            original_entries = list(entries)  # Keep copy for status display
             
             # Initialize checkpoint
             if checkpoint_manager:
@@ -276,12 +277,17 @@ def download_playlist(
             est_hours = estimated_total // 3600
             est_minutes = (estimated_total % 3600) // 60
             
-            # Exibir prévia da playlist
+            # Exibir prévia da playlist com status
             logger.info("=" * 60)
             logger.info(f"✅ Playlist encontrada: {total_videos} vídeo(s)")
+            if checkpoint_manager:
+                progress = checkpoint_manager.get_progress_summary()
+                if progress['completed'] > 0:
+                    logger.info(f"   ✅ Concluídos: {progress['completed']} | ❌ Pendentes: {progress['pending']}")
             logger.info("=" * 60)
             
-            for idx, entry in enumerate(entries, 1):
+            # Use original_entries to show ALL videos with status
+            for idx, entry in enumerate(original_entries, 1):
                 title = entry.get('title', 'Unknown')
                 duration = entry.get('duration', 0)
                 duration_str = f"{duration//60}:{duration%60:02d}" if duration else "N/A"
@@ -289,7 +295,10 @@ def download_playlist(
                 desired_name = f"{idx}. {safe_title}"
                 vid = entry.get('id', str(idx))
                 id_to_desired[vid] = desired_name
-                logger.info(f"  {idx}. {title} ({duration_str})")
+                
+                # Check if already completed
+                status_icon = "✅" if checkpoint_manager and checkpoint_manager.is_video_completed(vid) else "❌"
+                logger.info(f"  {status_icon} {idx}. {title} ({duration_str})")
             
             logger.info("=" * 60)
             
@@ -418,7 +427,11 @@ def download_playlist(
                     video_url = entry.get('webpage_url') or entry.get('url') or entry.get('id')
                     video_title = entry.get('title', 'Unknown')
                     video_id = entry.get('id', str(idx))
-                    logger.info(f"📥 [{idx}/{total_videos}] Baixando: {video_title}")
+                    
+                    # Find real index in original playlist
+                    real_idx = next((i+1 for i, e in enumerate(original_entries) if e.get('id') == video_id), idx)
+                    
+                    logger.info(f"📥 [{real_idx}/{total_videos}] Baixando: {video_title}")
                     
                     # Ajustar idiomas de legendas por vídeo
                     local_opts = dict(base_opts)
@@ -448,9 +461,20 @@ def download_playlist(
                     if video_id in id_to_desired:
                         _rename_downloads_to_desired_names(output_dir, {video_id: id_to_desired[video_id]})
                     
-                    logger.info(f"✅ [{idx}/{total_videos}] Download concluído: {video_title}")
+                    # Discover subtitle files that were downloaded
+                    downloaded_subtitle_files = []
+                    if download_subtitles:
+                        files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+                        desired_prefix = id_to_desired.get(video_id, '')
+                        for fname in files:
+                            if fname.lower().endswith('.srt') and fname.startswith(desired_prefix):
+                                downloaded_subtitle_files.append(fname)
                     
-                    # Mark as completed in checkpoint (subtitle determination will happen later)
+                    logger.info(f"✅ [{real_idx}/{total_videos}] Download concluído: {video_title}")
+                    if downloaded_subtitle_files:
+                        logger.debug(f"   📝 Legendas baixadas: {', '.join(downloaded_subtitle_files)}")
+                    
+                    # Mark as completed in checkpoint with subtitle files
                     if checkpoint_manager:
                         # Determine subtitle source based on settings
                         sub_source = None
@@ -459,13 +483,13 @@ def download_playlist(
                                 chosen = per_video_lang_choice[video_id]
                                 if '__WHISPER__' in chosen:
                                     sub_source = 'whisper_pending'
-                                elif chosen:
+                                elif chosen and downloaded_subtitle_files:
                                     sub_source = 'youtube'
                         
                         checkpoint_manager.mark_video_completed(
                             video_id=video_id,
                             subtitle_source=sub_source,
-                            subtitle_files=[]  # Will be updated after processing
+                            subtitle_files=downloaded_subtitle_files
                         )
                     
                     if idx < total_videos and download_delay > 0:
@@ -474,7 +498,7 @@ def download_playlist(
                         time.sleep(download_delay)
                         
                 except Exception as e:
-                    logger.error(f"❌ [{idx}/{total_videos}] Falha: {video_title} - {str(e)[:100]}")
+                    logger.error(f"❌ [{real_idx}/{total_videos}] Falha: {video_title} - {str(e)[:100]}")
                     
                     # Mark as failed in checkpoint
                     if checkpoint_manager:
