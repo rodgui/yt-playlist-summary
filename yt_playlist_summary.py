@@ -262,18 +262,6 @@ def download_playlist(
 
             # Mapa ID -> nome desejado "<idx>. <título normalizado>"
             id_to_desired: Dict[str, str] = {}
-            logger.info("=" * 60)
-            logger.info(f"✅ Playlist encontrada: {total_videos} vídeo(s)")
-            logger.info("=" * 60)
-            for idx, entry in enumerate(entries, 1):
-                title = entry.get('title', 'Unknown')
-                duration = entry.get('duration', 0)
-                duration_str = f"{duration//60}:{duration%60:02d}" if duration else "N/A"
-                safe_title = _sanitize_base_title(title)
-                desired_name = f"{idx}. {safe_title}"
-                vid = entry.get('id', str(idx))
-                id_to_desired[vid] = desired_name
-                logger.info(f"  {idx}. {title} ({duration_str})")
             
             # Calcular tempo total estimado
             total_duration = sum(e.get('duration', 0) for e in entries)
@@ -297,6 +285,10 @@ def download_playlist(
                 title = entry.get('title', 'Unknown')
                 duration = entry.get('duration', 0)
                 duration_str = f"{duration//60}:{duration%60:02d}" if duration else "N/A"
+                safe_title = _sanitize_base_title(title)
+                desired_name = f"{idx}. {safe_title}"
+                vid = entry.get('id', str(idx))
+                id_to_desired[vid] = desired_name
                 logger.info(f"  {idx}. {title} ({duration_str})")
             
             logger.info("=" * 60)
@@ -452,6 +444,10 @@ def download_playlist(
                     with yt_dlp.YoutubeDL(local_opts) as ydl_single:
                         ydl_single.download([video_url])
                     
+                    # Rename downloaded files immediately for this video
+                    if video_id in id_to_desired:
+                        _rename_downloads_to_desired_names(output_dir, {video_id: id_to_desired[video_id]})
+                    
                     logger.info(f"✅ [{idx}/{total_videos}] Download concluído: {video_title}")
                     
                     # Mark as completed in checkpoint (subtitle determination will happen later)
@@ -486,9 +482,9 @@ def download_playlist(
                     
                     continue
 
-            # Renomear todos os arquivos baixados de <id>.* para "<idx>. <título>.*"
-            _rename_downloads_to_desired_names(output_dir, id_to_desired)
-
+            # Note: Files are already renamed individually after each download
+            # No need to rename all at once here anymore
+            
             # Particionar arquivos baixados
             files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
             media_files = []
