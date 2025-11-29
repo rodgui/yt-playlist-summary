@@ -54,7 +54,7 @@ SUPPORTED_MEDIA_EXTS = {
 }
 
 def _sanitize_base_title(title: str) -> str:
-    """
+    r"""
     Normaliza o título mantendo ':' e removendo caracteres problemáticos.
     Substitui / e \ por ' - ' e comprime espaços.
     """
