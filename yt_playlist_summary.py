@@ -22,6 +22,9 @@ import subprocess
 # Import transcription functionality from mywhisper
 from mywhisper import transcribe_audio_to_srt
 
+# Import checkpoint manager
+from checkpoint_manager import CheckpointManager, get_checkpoint_path
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -167,11 +170,15 @@ def download_playlist(
     download_subtitles: bool = False,
     subtitle_languages: Optional[list[str]] = None,
     download_delay: int = 5,
-    interactive: bool = False
+    interactive: bool = False,
+    checkpoint_manager: Optional[CheckpointManager] = None
 ) -> list[dict]:
     """
     Download videos (and opcionalmente legendas) de uma playlist.
     Retorna lista de dicts com caminho e info de legendas.
+    
+    Args:
+        checkpoint_manager: Optional checkpoint manager for resume capability
     """
     downloaded = []
     os.makedirs(output_dir, exist_ok=True)
@@ -228,6 +235,30 @@ def download_playlist(
             entries = info['entries'] if 'entries' in info else [info]
             entries = [e for e in entries if e]
             total_videos = len(entries)
+            
+            # Initialize checkpoint
+            if checkpoint_manager:
+                checkpoint_manager.initialize_playlist(playlist_url, entries)
+                
+                # Check for previously completed videos
+                progress = checkpoint_manager.get_progress_summary()
+                if progress['completed'] > 0:
+                    logger.info("=" * 60)
+                    logger.info(f"🔄 RETOMANDO DOWNLOAD")
+                    logger.info("=" * 60)
+                    logger.info(f"✅ Já concluídos: {progress['completed']}/{progress['total']}")
+                    logger.info(f"⏭️  Pulando vídeos já processados...")
+                    logger.info("=" * 60)
+                    
+                    # Filter out completed videos
+                    entries = [
+                        e for e in entries
+                        if not checkpoint_manager.is_video_completed(e.get('id', ''))
+                    ]
+                    
+                    if not entries:
+                        logger.info("✅ Todos os vídeos já foram processados!")
+                        return downloaded
 
             # Mapa ID -> nome desejado "<idx>. <título normalizado>"
             id_to_desired: Dict[str, str] = {}
@@ -423,6 +454,24 @@ def download_playlist(
                     
                     logger.info(f"✅ [{idx}/{total_videos}] Download concluído: {video_title}")
                     
+                    # Mark as completed in checkpoint (subtitle determination will happen later)
+                    if checkpoint_manager:
+                        # Determine subtitle source based on settings
+                        sub_source = None
+                        if download_subtitles:
+                            if video_id in per_video_lang_choice:
+                                chosen = per_video_lang_choice[video_id]
+                                if '__WHISPER__' in chosen:
+                                    sub_source = 'whisper_pending'
+                                elif chosen:
+                                    sub_source = 'youtube'
+                        
+                        checkpoint_manager.mark_video_completed(
+                            video_id=video_id,
+                            subtitle_source=sub_source,
+                            subtitle_files=[]  # Will be updated after processing
+                        )
+                    
                     if idx < total_videos and download_delay > 0:
                         import time
                         logger.info(f"⏸️  Aguardando {download_delay}s...")
@@ -430,6 +479,11 @@ def download_playlist(
                         
                 except Exception as e:
                     logger.error(f"❌ [{idx}/{total_videos}] Falha: {video_title} - {str(e)[:100]}")
+                    
+                    # Mark as failed in checkpoint
+                    if checkpoint_manager:
+                        checkpoint_manager.mark_video_failed(video_id, str(e)[:500])
+                    
                     continue
 
             # Renomear todos os arquivos baixados de <id>.* para "<idx>. <título>.*"
@@ -538,7 +592,8 @@ def process_playlist(
     prefer_existing_subtitles: bool = False,
     subtitle_languages: Optional[list[str]] = None,
     download_delay: int = 5,
-    interactive: bool = False
+    interactive: bool = False,
+    enable_checkpoint: bool = True
 ) -> list[dict]:
     """Process a YouTube playlist: download, extract audio, convert, transcribe, and generate SRT."""
     results = []
@@ -550,6 +605,12 @@ def process_playlist(
     
     for directory in [downloads_dir, audio_dir, converted_dir, srt_dir]:
         os.makedirs(directory, exist_ok=True)
+    
+    # Initialize checkpoint manager
+    checkpoint = None
+    if enable_checkpoint:
+        checkpoint_path = get_checkpoint_path(output_dir, playlist_url)
+        checkpoint = CheckpointManager(checkpoint_path)
     
     try:
         logger.info("=" * 60)
@@ -563,7 +624,8 @@ def process_playlist(
             download_subtitles=prefer_existing_subtitles,
             subtitle_languages=subtitle_languages,
             download_delay=download_delay,
-            interactive=interactive
+            interactive=interactive,
+            checkpoint_manager=checkpoint
         )
 
         if not downloaded_items:
@@ -805,6 +867,18 @@ Examples:
         help='Modo interativo: exibe prévia da playlist e aguarda confirmação antes de iniciar'
     )
     
+    parser.add_argument(
+        '--no-checkpoint',
+        action='store_true',
+        help='Desabilitar sistema de checkpoint/retomada (força reprocessamento completo)'
+    )
+    
+    parser.add_argument(
+        '--clear-checkpoint',
+        action='store_true',
+        help='Limpar checkpoint existente e reiniciar do zero'
+    )
+    
     return parser.parse_args()
 
 
@@ -823,6 +897,15 @@ def main() -> int:
         logger.error("   Ou use --skip-transcription")
         return 1
     
+    # Handle checkpoint clearing
+    if args.clear_checkpoint:
+        checkpoint_path = get_checkpoint_path(args.output, args.url)
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+            logger.info(f"🗑️  Checkpoint removido: {checkpoint_path}")
+        else:
+            logger.info("ℹ️  Nenhum checkpoint encontrado para remover")
+    
     logger.info(f"🔗 URL: {args.url}")
     logger.info(f"📁 Diretório de saída: {args.output}")
     logger.info(f"🎵 Somente áudio: {args.audio_only}")
@@ -831,6 +914,7 @@ def main() -> int:
     logger.info(f"⏭️  Pular transcrição: {args.skip_transcription}")
     logger.info(f"⏸️  Delay: {args.download_delay}s")
     logger.info(f"🤝 Modo interativo: {args.interactive}")
+    logger.info(f"📖 Checkpoint: {'desabilitado' if args.no_checkpoint else 'habilitado'}")
     
     try:
         subtitle_langs = args.subtitle_languages.split(',') if args.subtitle_languages else None
@@ -846,7 +930,8 @@ def main() -> int:
             prefer_existing_subtitles=args.prefer_existing_subtitles,
             subtitle_languages=subtitle_langs,
             download_delay=args.download_delay,
-            interactive=args.interactive
+            interactive=args.interactive,
+            enable_checkpoint=not args.no_checkpoint
         )
         
         logger.info("=" * 60)

@@ -40,6 +40,8 @@ Opções úteis:
 - `--interactive` mostra prévia da playlist, confirma download e permite escolher idiomas por vídeo
 - `--download-delay 5` define atraso entre downloads para evitar rate limiting
 - `--skip-transcription` pula etapa de Whisper (apenas download/cópia de SRT)
+- `--no-checkpoint` desabilita checkpoint/retomada (força reprocessamento completo)
+- `--clear-checkpoint` limpa checkpoint existente e reinicia do zero
 
 Exemplos:
 ```bash
@@ -82,6 +84,74 @@ python translate_sub.py -i legenda.srt -s pt -t en --dry-run
 ```
 python mywhisper.py --input ./output/converted/audio.mp3 --api-key "$OPENAI_API_KEY"
 ```
+
+## Sistema de Checkpoint/Retomada
+
+**Novidade:** O sistema agora possui checkpoint automático para retomar downloads interrompidos!
+
+### Como Funciona
+
+1. **Criação automática**: Ao iniciar o processamento, um arquivo `.checkpoint_<id>.json` é criado em `output/`
+2. **Registro contínuo**: Cada vídeo baixado com sucesso é marcado como "OK" no checkpoint
+3. **Retomada inteligente**: Se o processo for interrompido (Ctrl+C, erro, etc), ao reiniciar o mesmo comando, apenas vídeos não concluídos serão processados
+
+### Exemplo de Uso
+
+```bash
+# Primeira execução - processa 10 vídeos, mas é interrompida no vídeo 5
+python yt_playlist_summary.py --url "PLAYLIST_URL" --api-key "$OPENAI_API_KEY"
+# ^C (interrompido pelo usuário)
+
+# Segunda execução - retoma do vídeo 6 automaticamente
+python yt_playlist_summary.py --url "PLAYLIST_URL" --api-key "$OPENAI_API_KEY"
+# ✅ Já concluídos: 5/10
+# ⏭️  Pulando vídeos já processados...
+```
+
+### Opções de Controle
+
+```bash
+# Desabilitar checkpoint (processar tudo novamente)
+python yt_playlist_summary.py --url "PLAYLIST_URL" --no-checkpoint
+
+# Limpar checkpoint e reiniciar do zero
+python yt_playlist_summary.py --url "PLAYLIST_URL" --clear-checkpoint
+
+# Ver progresso atual sem processar
+# O checkpoint é carregado automaticamente e mostra status
+```
+
+### Estrutura do Checkpoint
+
+O arquivo `.checkpoint_<id>.json` contém:
+```json
+{
+  "playlist_id": "abc123...",
+  "playlist_url": "https://...",
+  "total_videos": 10,
+  "videos": {
+    "video_id_1": {
+      "index": 1,
+      "title": "Video Title",
+      "status": "completed",
+      "subtitle_source": "youtube",
+      "downloaded_at": "2025-11-28T..."
+    },
+    "video_id_2": {
+      "index": 2,
+      "title": "Another Video",
+      "status": "pending"
+    }
+  }
+}
+```
+
+### Notas Importantes
+
+- Checkpoint é específico por playlist URL (diferentes URLs = diferentes checkpoints)
+- Vídeos com `status='failed'` são reprocessados na próxima execução
+- Arquivos já baixados no disco NÃO são re-baixados mesmo sem checkpoint
+- Seguro interromper a qualquer momento (Ctrl+C)
 
 ## Logging e Verbosidade
 
@@ -161,6 +231,10 @@ python yt_playlist_summary.py \
 - `mywhisper.py`: transcrição e rotinas de legenda/translation.
 - `translate_sub.py`: tradução de SRT com GPT-4.1-mini.
 - `generate_study_material.py`: geração de material educacional consolidado via GPT.
+- `checkpoint_manager.py`: gerenciamento de checkpoint para retomada de downloads.
+
+**Testes:**
+- `test_checkpoint.py`: testes unitários do sistema de checkpoint.
 
 Mantenha a separação de responsabilidades; novas funcionalidades de texto/legenda devem residir em módulos dedicados (ex.: `mywhisper.py` ou scripts como `translate_sub.py`).
 
@@ -241,8 +315,24 @@ python generate_study_material.py \
   -i
 ```
 
+**Exemplo com Checkpoint (interrupção e retomada):**
+```bash
+# Primeira execução - processando playlist grande
+python yt_playlist_summary.py --url "PLAYLIST_URL" --api-key "$OPENAI_API_KEY"
+# Processando vídeo 3/10...
+# ^C (usuário interrompe)
+
+# Segunda execução - retoma automaticamente
+python yt_playlist_summary.py --url "PLAYLIST_URL" --api-key "$OPENAI_API_KEY"
+# 🔄 RETOMANDO DOWNLOAD
+# ✅ Já concluídos: 3/10
+# ⏭️  Pulando vídeos já processados...
+# Processando vídeo 4/10...
+```
+
 Dicas:
 - Sem `-v` os warnings do yt-dlp são suprimidos; com `-v` você vê detalhes da extração.
 - Se não quiser usar Whisper, passe `--skip-transcription` (vídeos sem legendas ficarão sem SRT).
 - Ajuste `--download-delay` para reduzir risco de rate-limiting em playlists grandes.
 - Use `--generate-study-material` para criar automaticamente material educacional consolidado ao final.
+- Sistema de checkpoint permite interromper e retomar processamento a qualquer momento (Ctrl+C é seguro!).
