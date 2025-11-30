@@ -36,6 +36,14 @@ from checkpoint_manager import CheckpointManager, get_checkpoint_path
 # Import study material generator
 from generate_study_material import generate_playlist_study_content
 
+# Import language utilities
+from language_utils import (
+    get_default_source_languages,
+    get_default_output_language,
+    get_system_language,
+    parse_language_list,
+)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -136,26 +144,34 @@ def _ensure_unique_path(path: str) -> str:
             return str(new_path)
         counter += 1
 
-def _rename_downloads_to_desired_names(output_dir: str, id_to_desired: Dict[str, str]) -> None:
+def _rename_downloads_to_desired_names(downloads_dir: str, id_to_desired: Dict[str, str]) -> None:
     """
     Renomeia arquivos baixados de video_id para o título desejado.
     Usa pathlib.Path para compatibilidade cross-platform.
+    Reconhece padrões: VIDEO_ID.ext, VIDEO_ID.LANG.ext, VIDEO_ID.NA.LANG.ext
     """
-    downloads_dir = Path(output_dir) / 'downloads'
-    if not downloads_dir.exists():
+    dir_path = Path(downloads_dir)
+    if not dir_path.exists():
         return
     
-    for file_path in downloads_dir.iterdir():
+    # Extensões aceitas (mídia + legendas)
+    valid_exts = SUPPORTED_MEDIA_EXTS | {'.srt', '.vtt', '.ass', '.sub'}
+    
+    for file_path in dir_path.iterdir():
         if not file_path.is_file():
             continue
         
-        # Ignora arquivos que não são mídia
-        if file_path.suffix.lower() not in SUPPORTED_MEDIA_EXTS:
+        # Ignora arquivos que não são mídia nem legendas
+        if file_path.suffix.lower() not in valid_exts:
             continue
         
-        # Extrai o video_id do nome do arquivo (pode ser "VIDEO_ID.ext" ou "VIDEO_ID.lang.ext")
+        # Extrai o video_id do nome do arquivo
+        # Padrões possíveis:
+        #   VIDEO_ID.mp4
+        #   VIDEO_ID.en.srt
+        #   VIDEO_ID.NA.en.srt (YouTube auto-generated marker)
+        #   VIDEO_ID.NA.pt-BR.srt
         stem = file_path.stem
-        # Remove sufixo de idioma se presente (ex: ".pt-BR", ".en")
         parts = stem.split('.')
         video_id = parts[0]
         
@@ -165,9 +181,12 @@ def _rename_downloads_to_desired_names(output_dir: str, id_to_desired: Dict[str,
         desired_title = id_to_desired[video_id]
         sanitized_title = _sanitize_base_title(desired_title)
         
-        # Reconstrói o nome com possível sufixo de idioma
-        if len(parts) > 1:
-            new_stem = f"{sanitized_title}.{'.'.join(parts[1:])}"
+        # Reconstrói o nome preservando sufixos de idioma
+        # Remove 'NA' (marcador do YouTube para auto-generated) se presente
+        suffix_parts = [p for p in parts[1:] if p.upper() != 'NA']
+        
+        if suffix_parts:
+            new_stem = f"{sanitized_title}.{'.'.join(suffix_parts)}"
         else:
             new_stem = sanitized_title
         
@@ -267,8 +286,8 @@ def download_playlist(
     base_opts = {
         # Usar ID no nome para renomear com precisão depois
         'outtmpl': {
-            'default': os.path.join(output_dir, '%(id)s.%(ext)s'),
-            'subtitle': os.path.join(output_dir, '%(id)s.%(subtitle_language)s.%(ext)s'),
+            'default': str(downloads_dir / '%(id)s.%(ext)s'),
+            'subtitle': str(downloads_dir / '%(id)s.%(subtitle_language)s.%(ext)s'),
         },
         'ignoreerrors': True,
         'no_warnings': True,
@@ -540,14 +559,15 @@ def download_playlist(
                     
                     # Rename downloaded files immediately for this video
                     if video_id in id_to_desired:
-                        _rename_downloads_to_desired_names(output_dir, {video_id: id_to_desired[video_id]})
+                        _rename_downloads_to_desired_names(str(downloads_dir), {video_id: id_to_desired[video_id]})
                     
                     # Discover subtitle files that were downloaded
                     downloaded_subtitle_files = []
                     if download_subtitles:
-                        files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+                        files = [f for f in downloads_dir.iterdir() if f.is_file()]
                         desired_prefix = id_to_desired.get(video_id, '')
-                        for fname in files:
+                        for fpath in files:
+                            fname = fpath.name
                             if fname.lower().endswith('.srt') and fname.startswith(desired_prefix):
                                 downloaded_subtitle_files.append(fname)
                     
@@ -591,19 +611,19 @@ def download_playlist(
             # No need to rename all at once here anymore
             
             # Particionar arquivos baixados
-            files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
+            files = [f for f in downloads_dir.iterdir() if f.is_file()]
             media_files = []
             srt_files = []
 
-            for fname in files:
-                ext = Path(fname).suffix.lower()
+            for fpath in files:
+                ext = fpath.suffix.lower()
                 if ext == '.srt':
-                    srt_files.append(fname)
+                    srt_files.append(fpath.name)
                 elif ext in SUPPORTED_MEDIA_EXTS:
-                    media_files.append(fname)
+                    media_files.append(fpath.name)
 
             for fname in media_files:
-                path = os.path.join(output_dir, fname)
+                path = str(downloads_dir / fname)
                 stem = Path(fname).stem
                 downloaded.append({
                     'file_path': path,
@@ -616,7 +636,7 @@ def download_playlist(
                 related = [s for s in srt_files if s.startswith(prefix)]
                 if related:
                     item['subtitles_found'] = True
-                    item['subtitle_files'] = [os.path.join(output_dir, r) for r in related]
+                    item['subtitle_files'] = [str(downloads_dir / r) for r in related]
 
             logger.info(f"✅ Arquivos de mídia: {len(downloaded)}")
             logger.info(f"📝 Arquivos de legenda: {len(srt_files)}")
@@ -720,7 +740,7 @@ def process_playlist(
 
         downloaded_items = download_playlist(
             playlist_url,
-            downloads_dir,
+            output_dir,
             audio_only=audio_only,
             download_subtitles=prefer_existing_subtitles,
             subtitle_languages=subtitle_languages,
@@ -754,29 +774,40 @@ def process_playlist(
             }
 
             try:
-                # Verificar se vai usar legendas existentes antes de processar áudio
-                will_use_existing_subs = (
+                # Copiar legendas existentes para srt_dir (mesmo com skip_transcription)
+                has_existing_subs = (
                     prefer_existing_subtitles and 
-                    item.get('subtitles_found') and 
-                    not skip_transcription
+                    item.get('subtitles_found')
                 )
                 
-                # Step 4: Legendagem (verificação antecipada)
+                if has_existing_subs:
+                    logger.info("📝 Copiando legendas existentes...")
+                    srt_files = item['subtitle_files']
+                    copied_srts = []
+                    
+                    for src in srt_files:
+                        src_name = Path(src).name
+                        dst = os.path.join(srt_dir, src_name)
+                        shutil.copyfile(src, dst)
+                        copied_srts.append(dst)
+                        logger.info(f"  ✅ Copiada: {src_name}")
+                    
+                    result['used_existing_subtitles'] = True
+                    result['subtitle_files_copied'] = copied_srts
+                    logger.info(f"✅ Legendas copiadas: {len(copied_srts)} arquivo(s)")
+                
+                # Verificar se precisa de Whisper (só se não tiver legendas e transcrição habilitada)
+                needs_whisper = (
+                    not skip_transcription and 
+                    not has_existing_subs
+                )
+                
+                # Processamento de transcrição
                 if not skip_transcription:
                     logger.info("📝 ETAPA 2: Geração de Legendas")
                     
-                    if will_use_existing_subs:
-                        logger.info("🔍 Verificando legendas existentes...")
-                        srt_files = item['subtitle_files']
-                        copied_srts = []
-                        
-                        for src in srt_files:
-                            src_name = Path(src).name
-                            dst = os.path.join(srt_dir, src_name)
-                            shutil.copyfile(src, dst)
-                            copied_srts.append(dst)
-                            logger.info(f"  ✅ Copiada: {src_name}")
-                        
+                    if has_existing_subs:
+                        # Selecionar legenda principal baseada no idioma preferido
                         chosen = None
                         if subtitle_languages:
                             variants_list = [_normalize_lang_variants(lg) for lg in subtitle_languages]
@@ -802,9 +833,7 @@ def process_playlist(
                         chosen = chosen or (copied_srts[0] if copied_srts else None)
                         
                         result['srt_file'] = chosen
-                        result['used_existing_subtitles'] = True
                         result['used_whisper'] = False
-                        logger.info(f"✅ Legendas copiadas: {len(copied_srts)} arquivo(s)")
                         if chosen:
                             logger.info(f"📌 Legenda principal: {Path(chosen).name}")
                         logger.info("⏭️  Pulando extração/conversão de áudio (não necessário)")
@@ -994,12 +1023,22 @@ Examples:
         help='Desabilitar geração automática de material de estudo após processamento'
     )
     
+    # Language options for study material
+    default_source = ','.join(get_default_source_languages())
+    default_output = get_default_output_language()
+    
+    parser.add_argument(
+        '--source-language',
+        type=str,
+        default=default_source,
+        help=f'Idioma(s) de origem das legendas para material de estudo, separados por vírgula em ordem de prioridade (default: {default_source})'
+    )
+    
     parser.add_argument(
         '--study-language',
         type=str,
-        default='pt',
-        choices=['pt', 'en'],
-        help='Idioma do material de estudo gerado (default: pt)'
+        default=default_output,
+        help=f'Idioma de saída do material de estudo (default: {default_output})'
     )
     
     return parser.parse_args()
@@ -1050,6 +1089,9 @@ def main() -> int:
     logger.info(f"🤝 Modo interativo: {args.interactive}")
     logger.info(f"📖 Checkpoint: {'desabilitado' if args.no_checkpoint else 'habilitado'}")
     logger.info(f"📚 Material de estudo: {'desabilitado' if args.no_study_material else 'habilitado'}")
+    if not args.no_study_material:
+        logger.info(f"   🔤 Idioma(s) origem: {args.source_language}")
+        logger.info(f"   🎯 Idioma saída: {args.study_language}")
     
     try:
         results = process_playlist(
@@ -1105,12 +1147,16 @@ def main() -> int:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 study_output = os.path.join(args.output, f"study_material_{timestamp}.md")
                 
+                # Parse source languages
+                source_languages = parse_language_list(args.source_language)
+                
                 try:
                     generate_playlist_study_content(
                         subtitle_dir=subtitle_dir,
                         output_path=study_output,
                         api_key=args.api_key or '',
                         study_language=args.study_language,
+                        source_languages=source_languages,
                         skip_gpt=False,
                         interactive=args.interactive
                     )

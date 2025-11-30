@@ -26,7 +26,7 @@ Assistir horas de vídeos educacionais é demorado. Este projeto resolve esse pr
 | 📝 **Legendas automáticas** | Prioriza legendas do YouTube; usa Whisper AI se não disponíveis |
 | 🔄 **Checkpoint/Retomada** | Interrompa e retome a qualquer momento (Ctrl+C seguro) |
 | 📚 **Material de estudo** | Gera documento educacional completo via GPT |
-| 🌍 **Multi-idioma** | Suporte a pt-BR, en e outros idiomas |
+| 🌍 **Multi-idioma inteligente** | Detecta idioma do SO, seleciona legendas por prioridade, evita duplicatas |
 | 🎵 **Modo áudio** | Opção para baixar apenas áudio (economia de espaço) |
 
 ---
@@ -130,6 +130,21 @@ python yt_playlist_summary.py --url "URL" --no-study-material
 
 # Limpar checkpoint e reprocessar tudo
 python yt_playlist_summary.py --url "URL" --clear-checkpoint
+
+# Especificar idioma fonte das legendas (prioridade)
+python yt_playlist_summary.py --url "URL" --source-language pt-BR,en
+
+# Material de estudo em inglês a partir de legendas em português
+python yt_playlist_summary.py --url "URL" --source-language pt-BR --study-language en
+
+# Material em inglês usando legendas em inglês
+python yt_playlist_summary.py --url "URL" --source-language en --study-language en
+
+# Material em português usando legendas em inglês (tradução automática)
+python yt_playlist_summary.py --url "URL" --source-language en --study-language pt
+
+# Forçar idioma específico (ignorar detecção do SO)
+python yt_playlist_summary.py --url "URL" --source-language ja,en --study-language ja
 ```
 
 ### Estrutura de Saída
@@ -163,7 +178,8 @@ output/
 | `--skip-transcription` | `False` | Pular etapa de legendas |
 | `--no-prefer-existing-subtitles` | `False` | Forçar Whisper (ignorar legendas nativas) |
 | `--no-study-material` | `False` | Não gerar material de estudo |
-| `--study-language` | `pt` | Idioma do material (pt/en) |
+| `--source-language` | *idioma do SO* | Idioma(s) fonte das legendas (ex: `pt-BR,en`) |
+| `--study-language` | *idioma do SO* | Idioma do material de saída |
 | `--no-checkpoint` | `False` | Desabilitar checkpoint |
 | `--clear-checkpoint` | `False` | Limpar checkpoint e reiniciar |
 
@@ -200,9 +216,20 @@ python translate_sub.py \
 ### Gerar material de estudo a partir de legendas prontas
 
 ```bash
+# Usar padrões do sistema (detecta idioma do SO)
+python generate_study_material.py -s ./output/subtitles
+
+# Especificar idioma fonte e de saída
 python generate_study_material.py \
   --subtitle-dir ./output/subtitles \
-  --language pt
+  --source-language pt-BR,en \
+  --output-language pt
+
+# Modo interativo (pergunta idiomas)
+python generate_study_material.py -s ./output/subtitles -i
+
+# Apenas consolidar (sem GPT)
+python generate_study_material.py -s ./output/subtitles --skip-gpt
 ```
 
 ### Transcrever arquivo de áudio isolado
@@ -238,12 +265,45 @@ yt-playlist-summary/
 ├── yt_playlist_summary.py    # Orquestrador principal do pipeline
 ├── mywhisper.py              # Transcrição via Whisper + cache
 ├── generate_study_material.py # Geração de material educacional
+├── language_utils.py         # Detecção de idioma do SO e seleção inteligente
 ├── checkpoint_manager.py      # Sistema de checkpoint/retomada
 ├── translate_sub.py          # Tradução de SRT via GPT
 ├── rename_from_checkpoint.py # Utilitário de renomeação
 ├── requirements.txt          # Dependências Python
 └── README.md
 ```
+
+---
+
+## 🌐 Seleção Inteligente de Idiomas
+
+O sistema detecta automaticamente o idioma do seu sistema operacional e configura os padrões:
+
+| SO em Português | SO em Inglês |
+|-----------------|---------------|
+| Fonte: `pt-BR, pt, und` | Fonte: `en-US, en, und` |
+| Saída: `pt` | Saída: `en` |
+
+### Como funciona
+
+1. **Agrupa legendas por vídeo** — identifica índice pelo nome do arquivo
+2. **Seleciona uma legenda por vídeo** — usa a prioridade de idiomas configurada
+3. **Evita duplicatas** — economiza tokens do GPT!
+
+**Exemplo prático:**
+```
+Subtitles/
+├── 1. Intro.en.srt
+├── 1. Intro.pt-BR.srt   ← selecionado (pt-BR tem prioridade)
+├── 2. Review.en.srt
+└── 2. Review.pt-BR.srt  ← selecionado
+
+Resultado: 2 legendas processadas em vez de 4!
+```
+
+### Códigos de idioma suportados (BCP 47)
+
+`pt`, `pt-BR`, `en`, `en-US`, `es`, `fr`, `de`, `it`, `ja`, `zh`, `ko`, `ru`, `ar`, `hi`
 
 ---
 

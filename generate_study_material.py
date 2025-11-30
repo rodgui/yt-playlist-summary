@@ -19,6 +19,21 @@ import hashlib
 
 from openai import OpenAI
 
+# Import language utilities
+from language_utils import (
+    normalize_language_code,
+    get_system_language,
+    get_system_language_base,
+    get_default_source_languages,
+    get_default_output_language,
+    get_available_languages,
+    group_subtitles_by_video,
+    select_subtitles_for_playlist,
+    parse_language_list,
+    validate_language_code,
+    extract_video_title_from_filename,
+)
+
 logger = logging.getLogger('study_material_generator')
 
 
@@ -92,11 +107,22 @@ def extract_video_metadata_from_filename(filename: str) -> Dict[str, str]:
 
 def consolidate_playlist_subtitles(
     subtitle_dir: str,
-    output_format: str = 'markdown'
-) -> str:
+    output_format: str = 'markdown',
+    source_languages: Optional[List[str]] = None,
+    interactive: bool = False
+) -> Tuple[str, int]:
     """
-    Consolidate all SRT files in directory into structured text.
-    Returns consolidated content string (Markdown or JSON).
+    Consolidate SRT files in directory into structured text.
+    Selects ONE subtitle per video based on language preference.
+    
+    Args:
+        subtitle_dir: Directory containing SRT files
+        output_format: 'markdown' or 'json'
+        source_languages: List of language codes in order of preference
+        interactive: If True, prompt user for language selection
+    
+    Returns:
+        Tuple of (consolidated content string, video count)
     """
     if not os.path.isdir(subtitle_dir):
         raise ValueError(f"Subtitle directory not found: {subtitle_dir}")
@@ -110,41 +136,77 @@ def consolidate_playlist_subtitles(
     if not srt_files:
         raise ValueError(f"No SRT files found in {subtitle_dir}")
     
-    logger.info(f"📚 Consolidando {len(srt_files)} arquivo(s) de legenda...")
+    # Get available languages
+    available_langs = get_available_languages(srt_files)
+    video_groups = group_subtitles_by_video(srt_files)
+    total_videos = len(video_groups)
     
-    # Group by video (same index prefix)
+    logger.info(f"📂 Diretório: {subtitle_dir}")
+    logger.info(f"📝 Arquivos SRT encontrados: {len(srt_files)}")
+    logger.info(f"🎬 Vídeos identificados: {total_videos}")
+    
+    # Display available languages
+    logger.info("")
+    logger.info("🌐 Idiomas disponíveis nas legendas:")
+    for lang, count in sorted(available_langs.items(), key=lambda x: -x[1]):
+        lang_display = lang if lang != 'und' else 'und (whisper)'
+        logger.info(f"   • {lang_display}: {count} vídeo(s)")
+    
+    # Determine source languages
+    if source_languages is None:
+        source_languages = get_default_source_languages()
+    
+    # Interactive language selection
+    if interactive:
+        logger.info("")
+        logger.info(f"📋 Prioridade atual: {', '.join(source_languages)}")
+        
+        response = input(f"\n❓ Alterar idioma fonte? (códigos separados por vírgula ou Enter para manter): ").strip()
+        if response:
+            source_languages = parse_language_list(response)
+            logger.info(f"✅ Nova prioridade: {', '.join(source_languages)}")
+    
+    # Select one subtitle per video
+    selections = select_subtitles_for_playlist(srt_files, source_languages)
+    
+    if not selections:
+        raise ValueError("No subtitles could be selected based on language preference")
+    
+    # Log selections
+    logger.info("")
+    logger.info(f"📚 Consolidando {len(selections)} vídeo(s) (1 legenda por vídeo)...")
+    
     videos_content = []
     
-    for srt_file in srt_files:
-        srt_path = os.path.join(subtitle_dir, srt_file)
-        metadata = extract_video_metadata_from_filename(srt_file)
+    for video_index, lang_code, filename, title in selections:
+        srt_path = os.path.join(subtitle_dir, filename)
         segments = parse_srt_file(srt_path)
         
         if not segments:
-            logger.warning(f"  ⚠️  Arquivo vazio ou inválido: {srt_file}")
+            logger.warning(f"  ⚠️  Arquivo vazio ou inválido: {filename}")
             continue
         
         # Concatenate all segment texts
         full_text = ' '.join(seg['text'] for seg in segments)
         
         videos_content.append({
-            'file': srt_file,
-            'index': metadata['index'],
-            'title': metadata['title'],
-            'language': metadata['language'],
+            'file': filename,
+            'index': video_index,
+            'title': title,
+            'language': lang_code,
             'segments': segments,
             'full_text': full_text,
             'word_count': len(full_text.split())
         })
         
-        logger.info(f"  ✅ {metadata['index']}. {metadata['title']} ({len(segments)} segmentos)")
+        logger.info(f"  ✅ {video_index}. {title} [{lang_code}] ({len(segments)} segmentos)")
     
     # Sort by index
     videos_content.sort(key=lambda x: x['index'])
     
     # Generate output based on format
     if output_format == 'json':
-        return json.dumps(videos_content, ensure_ascii=False, indent=2)
+        return (json.dumps(videos_content, ensure_ascii=False, indent=2), len(videos_content))
     
     # Markdown format (default)
     lines = [
@@ -156,12 +218,12 @@ def consolidate_playlist_subtitles(
     
     for video in videos_content:
         lines.append(f"\n## {video['index']}. {video['title']}")
-        lines.append(f"\n**Idioma:** {video['language']} | **Palavras:** {video['word_count']}")
+        lines.append(f"\n**Idioma fonte:** {video['language']} | **Palavras:** {video['word_count']}")
         lines.append(f"\n### Conteúdo\n")
         lines.append(video['full_text'])
         lines.append("\n---\n")
     
-    return '\n'.join(lines)
+    return ('\n'.join(lines), len(videos_content))
 
 
 def estimate_tokens(text: str) -> int:
@@ -361,21 +423,69 @@ def generate_playlist_study_content(
     output_path: str,
     api_key: str,
     study_language: str = 'pt',
+    source_languages: Optional[List[str]] = None,
     consolidation_format: str = 'markdown',
     skip_gpt: bool = False,
     interactive: bool = False
 ) -> str:
     """
     Main function: consolidate SRT files and generate study material.
-    Returns path to generated file.
+    
+    Args:
+        subtitle_dir: Directory containing SRT files
+        output_path: Path for output file
+        api_key: OpenAI API key
+        study_language: Output language for material (e.g., 'pt', 'en')
+        source_languages: List of source language codes in order of preference
+        consolidation_format: 'markdown' or 'json'
+        skip_gpt: If True, only consolidate without GPT
+        interactive: If True, prompt for confirmations
+    
+    Returns:
+        Path to generated file
     """
     logger.info("=" * 60)
     logger.info("📚 GERAÇÃO DE MATERIAL DE ESTUDO")
     logger.info("=" * 60)
     
-    # Step 1: Consolidate subtitles
+    # Detect system language for defaults
+    sys_lang = get_system_language()
+    sys_base = get_system_language_base()
+    
+    # Set default source languages based on system
+    if source_languages is None:
+        source_languages = get_default_source_languages()
+    
+    # Set default output language based on system
+    if study_language is None:
+        study_language = get_default_output_language()
+    
+    # Normalize output language
+    study_language = normalize_language_code(study_language, 'iso639-1')
+    
+    logger.info(f"🖥️  Idioma do sistema: {sys_lang}")
+    logger.info(f"📥 Idioma fonte (prioridade): {', '.join(source_languages)}")
+    logger.info(f"📤 Idioma do material: {study_language}")
+    logger.info("")
+    
+    # Interactive output language selection
+    if interactive:
+        response = input(f"❓ Alterar idioma do material? (pt/en ou Enter para '{study_language}'): ").strip()
+        if response:
+            study_language = normalize_language_code(response, 'iso639-1')
+            logger.info(f"✅ Idioma do material: {study_language}")
+        logger.info("")
+    
+    # Step 1: Consolidate subtitles (with language selection)
     logger.info("🔄 Etapa 1: Consolidando legendas...")
-    consolidated = consolidate_playlist_subtitles(subtitle_dir, consolidation_format)
+    logger.info("")
+    
+    consolidated, video_count = consolidate_playlist_subtitles(
+        subtitle_dir, 
+        consolidation_format,
+        source_languages=source_languages,
+        interactive=interactive
+    )
     
     # Estimate costs and duration
     total_tokens = estimate_tokens(consolidated)
@@ -390,6 +500,7 @@ def generate_playlist_study_content(
     consolidated_path = output_path.replace('.md', '_consolidated.md')
     with open(consolidated_path, 'w', encoding='utf-8') as f:
         f.write(consolidated)
+    logger.info("")
     logger.info(f"💾 Consolidado salvo: {Path(consolidated_path).name}")
     
     if skip_gpt:
@@ -397,9 +508,11 @@ def generate_playlist_study_content(
         return consolidated_path
     
     # Display summary and ask for confirmation
+    logger.info("")
     logger.info("=" * 60)
     logger.info("📊 RESUMO DA OPERAÇÃO")
     logger.info("=" * 60)
+    logger.info(f"🎬 Vídeos processados: {video_count}")
     logger.info(f"📝 Caracteres: {len(consolidated):,}")
     logger.info(f"🔢 Tokens estimados (entrada): ~{total_tokens:,}")
     logger.info(f"💰 Custo estimado:")
@@ -413,6 +526,7 @@ def generate_playlist_study_content(
         logger.info(f"⏱️  Duração estimada: ~{estimated_duration_seconds_remainder}s")
     
     logger.info(f"🤖 Modelo: gpt-5-mini")
+    logger.info(f"📤 Idioma de saída: {study_language}")
     logger.info("=" * 60)
     
     # Always ask for confirmation before sending to GPT
@@ -439,6 +553,9 @@ def generate_playlist_study_content(
         header = f"""# Material de Estudo - Playlist
 **Gerado em:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **Fonte:** {subtitle_dir}
+**Idioma fonte:** {', '.join(source_languages)}
+**Idioma do material:** {study_language}
+**Vídeos:** {video_count}
 
 ---
 
@@ -456,8 +573,27 @@ def generate_playlist_study_content(
 if __name__ == '__main__':
     import argparse
     
+    # Get defaults from system
+    default_source = ','.join(get_default_source_languages())
+    default_output = get_default_output_language()
+    
     parser = argparse.ArgumentParser(
-        description='Generate study material from playlist subtitles'
+        description='Generate study material from playlist subtitles',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Language codes (BCP 47):
+  pt, pt-BR, en, en-US, es, fr, de, it, ja, zh, ko, ru, ar, hi
+
+Examples:
+  # Use system language defaults (detected: {get_system_language()})
+  %(prog)s -s ./subtitles
+
+  # Specify source priority and output language
+  %(prog)s -s ./subtitles --source-language pt-BR,en --output-language en
+
+  # Interactive mode (prompts for language selection)
+  %(prog)s -s ./subtitles -i
+"""
     )
     parser.add_argument(
         '-s', '--subtitle-dir',
@@ -478,11 +614,16 @@ if __name__ == '__main__':
         help='OpenAI API key'
     )
     parser.add_argument(
-        '-l', '--language',
+        '--source-language',
         type=str,
-        default='pt',
-        choices=['pt', 'en'],
-        help='Study material language (default: pt)'
+        default=default_source,
+        help=f'Source subtitle language priority, comma-separated (default: {default_source})'
+    )
+    parser.add_argument(
+        '--output-language', '-l',
+        type=str,
+        default=default_output,
+        help=f'Output material language (default: {default_output})'
     )
     parser.add_argument(
         '--skip-gpt',
@@ -492,7 +633,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '-i', '--interactive',
         action='store_true',
-        help='Ask confirmation for large playlists'
+        help='Interactive mode: prompt for language selection'
     )
     parser.add_argument(
         '-v', '--verbose',
@@ -514,6 +655,9 @@ if __name__ == '__main__':
         logger.error("❌ OpenAI API key required (use --api-key or OPENAI_API_KEY)")
         exit(1)
     
+    # Parse source languages
+    source_languages = parse_language_list(args.source_language)
+    
     # Generate output filename if not provided
     if not args.output:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -524,7 +668,8 @@ if __name__ == '__main__':
             subtitle_dir=args.subtitle_dir,
             output_path=args.output,
             api_key=args.api_key or '',
-            study_language=args.language,
+            study_language=args.output_language,
+            source_languages=source_languages,
             skip_gpt=args.skip_gpt,
             interactive=args.interactive
         )
