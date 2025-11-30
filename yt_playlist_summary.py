@@ -25,6 +25,9 @@ from mywhisper import transcribe_audio_to_srt
 # Import checkpoint manager
 from checkpoint_manager import CheckpointManager, get_checkpoint_path
 
+# Import study material generator
+from generate_study_material import generate_playlist_study_content
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -789,7 +792,7 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Download and transcribe a playlist
+  # Download and transcribe a playlist (uses existing subtitles if available)
   %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..."
 
   # Download audio only
@@ -806,6 +809,12 @@ Examples:
   
   # Interactive mode with confirmation prompt
   %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --interactive
+  
+  # Disable study material generation
+  %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --no-study-material
+  
+  # Force Whisper transcription (ignore existing subtitles)
+  %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --no-prefer-existing-subtitles
         """
     )
     
@@ -861,17 +870,18 @@ Examples:
         help='Enable verbose logging'
     )
     
+    # Changed: prefer-existing-subtitles agora é True por padrão
     parser.add_argument(
-        '--prefer-existing-subtitles',
+        '--no-prefer-existing-subtitles',
         action='store_true',
-        help='Tentar usar legendas já existentes do vídeo (manuais ou automáticas) e pular Whisper se encontradas'
+        help='Desabilitar busca de legendas existentes do YouTube (forçar uso do Whisper)'
     )
     
     parser.add_argument(
         '--subtitle-languages',
         type=str,
-        default=None,
-        help='Lista de idiomas para buscar legendas existentes (ex: "pt,en"). Default interno: pt,en'
+        default='pt-BR,en',
+        help='Lista de idiomas para buscar legendas existentes (default: "pt-BR,en")'
     )
     
     parser.add_argument(
@@ -899,6 +909,21 @@ Examples:
         help='Limpar checkpoint existente e reiniciar do zero'
     )
     
+    # Novo: geração de material de estudo (habilitado por padrão)
+    parser.add_argument(
+        '--no-study-material',
+        action='store_true',
+        help='Desabilitar geração automática de material de estudo após processamento'
+    )
+    
+    parser.add_argument(
+        '--study-language',
+        type=str,
+        default='pt',
+        choices=['pt', 'en'],
+        help='Idioma do material de estudo gerado (default: pt)'
+    )
+    
     return parser.parse_args()
 
 
@@ -910,6 +935,12 @@ def main() -> int:
     logger.info("=" * 60)
     logger.info("🎬 YouTube Playlist Summary Tool")
     logger.info("=" * 60)
+    
+    # Derivar prefer_existing_subtitles da flag negada
+    prefer_existing_subtitles = not args.no_prefer_existing_subtitles
+    
+    # Derivar generate_study_material da flag negada
+    generate_study_material = not args.no_study_material
     
     if not args.skip_transcription and not args.api_key:
         logger.error("❌ Chave OpenAI necessária para transcrição")
@@ -926,18 +957,23 @@ def main() -> int:
         else:
             logger.info("ℹ️  Nenhum checkpoint encontrado para remover")
     
+    # Parse subtitle languages
+    subtitle_langs = args.subtitle_languages.split(',') if args.subtitle_languages else ['pt-BR', 'en']
+    
     logger.info(f"🔗 URL: {args.url}")
     logger.info(f"📁 Diretório de saída: {args.output}")
     logger.info(f"🎵 Somente áudio: {args.audio_only}")
     logger.info(f"💾 Manter áudio original: {args.keep_original}")
-    logger.info(f"🌍 Idioma: {args.language or 'auto-detect'}")
+    logger.info(f"🌍 Idioma transcrição: {args.language or 'auto-detect'}")
     logger.info(f"⏭️  Pular transcrição: {args.skip_transcription}")
+    logger.info(f"📝 Preferir legendas existentes: {prefer_existing_subtitles}")
+    logger.info(f"🌐 Idiomas legendas: {', '.join(subtitle_langs)}")
     logger.info(f"⏸️  Delay: {args.download_delay}s")
     logger.info(f"🤝 Modo interativo: {args.interactive}")
     logger.info(f"📖 Checkpoint: {'desabilitado' if args.no_checkpoint else 'habilitado'}")
+    logger.info(f"📚 Material de estudo: {'desabilitado' if args.no_study_material else 'habilitado'}")
     
     try:
-        subtitle_langs = args.subtitle_languages.split(',') if args.subtitle_languages else None
         results = process_playlist(
             playlist_url=args.url,
             output_dir=args.output,
@@ -947,7 +983,7 @@ def main() -> int:
             skip_transcription=args.skip_transcription,
             language=args.language,
             verbose=args.verbose,
-            prefer_existing_subtitles=args.prefer_existing_subtitles,
+            prefer_existing_subtitles=prefer_existing_subtitles,
             subtitle_languages=subtitle_langs,
             download_delay=args.download_delay,
             interactive=args.interactive,
@@ -975,6 +1011,39 @@ def main() -> int:
                 if r['status'] == 'error':
                     logger.warning(f"  • {Path(r['original_file']).name}: {r.get('error', 'Unknown')[:100]}")
         
+        # Geração de material de estudo (se habilitado e houver legendas)
+        if generate_study_material and not args.skip_transcription and success_count > 0:
+            logger.info("=" * 60)
+            logger.info("📚 ETAPA FINAL: Geração de Material de Estudo")
+            logger.info("=" * 60)
+            
+            subtitle_dir = os.path.join(args.output, "subtitles")
+            
+            # Verificar se há arquivos de legenda
+            srt_files = [f for f in os.listdir(subtitle_dir) if f.endswith('.srt')] if os.path.isdir(subtitle_dir) else []
+            
+            if srt_files:
+                from datetime import datetime
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                study_output = os.path.join(args.output, f"study_material_{timestamp}.md")
+                
+                try:
+                    generate_playlist_study_content(
+                        subtitle_dir=subtitle_dir,
+                        output_path=study_output,
+                        api_key=args.api_key or '',
+                        study_language=args.study_language,
+                        skip_gpt=False,
+                        interactive=args.interactive
+                    )
+                    logger.info(f"✅ Material de estudo gerado: {study_output}")
+                except Exception as e:
+                    logger.error(f"❌ Falha na geração do material de estudo: {e}")
+            else:
+                logger.warning("⚠️  Nenhuma legenda encontrada para gerar material de estudo")
+        elif generate_study_material and args.skip_transcription:
+            logger.info("⏭️  Material de estudo não gerado (transcrição desabilitada)")
+        
         logger.info("=" * 60)
         logger.info("✨ Concluído!")
         logger.info("=" * 60)
@@ -984,7 +1053,3 @@ def main() -> int:
     except Exception as e:
         logger.error(f"❌ Erro fatal: {e}")
         return 1
-
-
-if __name__ == '__main__':
-    sys.exit(main())
