@@ -3,7 +3,7 @@
 Estas instruções orientam agentes de IA a trabalhar produtivamente neste repositório (`yt-playlist-summary`). Foque em manter a separação de responsabilidades entre coleta/transformação de mídia e transcrição/legendas.
 
 ## Visão Geral
-Ferramenta em Python para: (1) baixar vídeos/áudios de playlists YouTube, (2) extrair e converter áudio (MP3 64kbps mono), (3) transcrever via Whisper API da OpenAI, (4) gerar legendas SRT e opcionalmente traduzir usando modelos GPT.
+Ferramenta em Python, multiplataforma (MacOS, Windows e Linux) para: (1) baixar vídeos/áudios de playlists YouTube, (2) extrair e converter áudio (MP3 64kbps mono), (3) transcrever via Whisper API da OpenAI, (4) gerar legendas SRT e opcionalmente traduzir usando modelos GPT.
 
 ## Arquitetura
 - `yt_playlist_summary.py`: Orquestra pipeline em etapas (download → extração → conversão → transcrição/SRT). Não contém lógica de transcrição interna; delega para `mywhisper.transcribe_audio_to_srt`.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 YouTube Playlist Summary Tool
 
@@ -11,6 +12,13 @@ import argparse
 import logging
 import os
 import sys
+import io
+
+# Forçar UTF-8 no stdout/stderr para Windows
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 import shutil
@@ -58,52 +66,120 @@ SUPPORTED_MEDIA_EXTS = {
 
 def _sanitize_base_title(title: str) -> str:
     r"""
-    Normaliza o título mantendo ':' e removendo caracteres problemáticos.
-    Substitui / e \ por ' - ' e comprime espaços.
+    Normaliza o título para nome de arquivo seguro em todos os sistemas operacionais.
+    Remove/substitui caracteres problemáticos para Windows, macOS e Linux.
     """
-    t = (title or '').replace('：', ':')  # converte dois-pontos "fullwidth" para ':'
+    if not title:
+        return "untitled"
+    
+    t = title
+    
+    # Normaliza caracteres Unicode similares para ASCII
+    t = t.replace('：', ':')  # fullwidth colon → regular colon
+    t = t.replace('／', '/')  # fullwidth slash
+    t = t.replace('＼', '\\')  # fullwidth backslash
+    
+    # Substitui separadores de caminho por hífen
     t = t.replace('/', ' - ').replace('\\', ' - ')
-    # remove caracteres geralmente problemáticos, mantendo ':'
-    t = re.sub(r'[<>\"|\?\*]', '', t)
-    # comprime espaços
-    t = re.sub(r'\s{2,}', ' ', t).strip()
+    
+    # Remove caracteres proibidos no Windows: < > : " | ? *
+    # Mantém hífen, underscore, espaço, letras, números e acentos
+    forbidden_chars = '<>:"|?*'
+    for char in forbidden_chars:
+        t = t.replace(char, '')
+    
+    # Remove caracteres de controle (0x00-0x1F)
+    t = ''.join(c for c in t if ord(c) >= 32)
+    
+    # Comprime espaços múltiplos
+    while '  ' in t:
+        t = t.replace('  ', ' ')
+    
+    # Remove espaços no início/fim
+    t = t.strip()
+    
+    # Remove pontos no final (Windows não permite)
+    t = t.rstrip('.')
+    
+    # Nomes reservados do Windows
+    reserved_names = {
+        'CON', 'PRN', 'AUX', 'NUL',
+        'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+        'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+    }
+    if t.upper() in reserved_names:
+        t = f"_{t}"
+    
+    # Limita tamanho (255 é o máximo em muitos sistemas, mas deixamos margem para extensão)
+    if len(t) > 200:
+        t = t[:200]
+    
+    # Se ficou vazio após sanitização
+    if not t:
+        return "untitled"
+    
     return t
 
 def _ensure_unique_path(path: str) -> str:
-    """Garante nome único adicionando sufixo (n) se já existir."""
-    if not os.path.exists(path):
-        return path
-    base = Path(path).with_suffix('')
-    ext = Path(path).suffix
-    n = 1
+    """
+    Garante que o caminho seja único, adicionando sufixo numérico se necessário.
+    Usa pathlib.Path para compatibilidade cross-platform.
+    """
+    p = Path(path)
+    if not p.exists():
+        return str(p)
+    
+    counter = 1
     while True:
-        candidate = f"{base} ({n}){ext}"
-        if not os.path.exists(candidate):
-            return candidate
-        n += 1
+        new_path = p.parent / f"{p.stem}_{counter}{p.suffix}"
+        if not new_path.exists():
+            return str(new_path)
+        counter += 1
 
 def _rename_downloads_to_desired_names(output_dir: str, id_to_desired: Dict[str, str]) -> None:
     """
-    Renomeia arquivos baixados que começam com <id>.* para <idx>. <titulo>.*,
-    preservando sufixos de idioma das legendas (ex: .pt-BR.srt).
+    Renomeia arquivos baixados de video_id para o título desejado.
+    Usa pathlib.Path para compatibilidade cross-platform.
     """
-    files = [f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))]
-
-    # Trabalhar id a id para evitar conflito de nomes
-    for vid, desired_base in id_to_desired.items():
-        for fname in list(files):
-            if not fname.startswith(vid + "."):
-                continue
-            old_path = os.path.join(output_dir, fname)
-            # resto inclui .ext ou .<lang>.srt
-            rest = fname[len(vid):]  # começa com '.'
-            new_name = f"{desired_base}{rest}"
-            new_path = os.path.join(output_dir, new_name)
-            new_path = _ensure_unique_path(new_path)
-            os.rename(old_path, new_path)
-            # atualizar lista local para evitar reprocessar
-            files.remove(fname)
-            files.append(Path(new_path).name)
+    downloads_dir = Path(output_dir) / 'downloads'
+    if not downloads_dir.exists():
+        return
+    
+    for file_path in downloads_dir.iterdir():
+        if not file_path.is_file():
+            continue
+        
+        # Ignora arquivos que não são mídia
+        if file_path.suffix.lower() not in SUPPORTED_MEDIA_EXTS:
+            continue
+        
+        # Extrai o video_id do nome do arquivo (pode ser "VIDEO_ID.ext" ou "VIDEO_ID.lang.ext")
+        stem = file_path.stem
+        # Remove sufixo de idioma se presente (ex: ".pt-BR", ".en")
+        parts = stem.split('.')
+        video_id = parts[0]
+        
+        if video_id not in id_to_desired:
+            continue
+        
+        desired_title = id_to_desired[video_id]
+        sanitized_title = _sanitize_base_title(desired_title)
+        
+        # Reconstrói o nome com possível sufixo de idioma
+        if len(parts) > 1:
+            new_stem = f"{sanitized_title}.{'.'.join(parts[1:])}"
+        else:
+            new_stem = sanitized_title
+        
+        new_path = file_path.parent / f"{new_stem}{file_path.suffix}"
+        new_path = Path(_ensure_unique_path(str(new_path)))
+        
+        if file_path != new_path:
+            try:
+                file_path.rename(new_path)
+                logger.debug(f"Renomeado: {file_path.name} → {new_path.name}")
+            except OSError as e:
+                logger.warning(f"Não foi possível renomear {file_path.name}: {e}")
 
 def _normalize_lang_variants(lang: str) -> list[str]:
     """
@@ -177,12 +253,14 @@ def download_playlist(
     checkpoint_manager: Optional[CheckpointManager] = None
 ) -> list[dict]:
     """
-    Download videos (and opcionalmente legendas) de uma playlist.
-    Retorna lista de dicts com caminho e info de legendas.
-    
-    Args:
-        checkpoint_manager: Optional checkpoint manager for resume capability
+    Download videos or audio from a YouTube playlist.
+    Uses pathlib.Path for cross-platform compatibility.
     """
+    # Usa Path para garantir separadores corretos no SO atual
+    output_path = Path(output_dir)
+    downloads_dir = output_path / 'downloads'
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+
     downloaded = []
     os.makedirs(output_dir, exist_ok=True)
 
@@ -359,8 +437,8 @@ def download_playlist(
                 if videos_missing_subtitles:
                     logger.info("=" * 60)
                     logger.info(f"⚠️  {len(videos_missing_subtitles)} vídeo(s) sem os idiomas solicitados ({', '.join(requested_langs)})")
-                    resp = input("❓ Ver idiomas disponíveis e escolher manualmente? (s/n): ").strip().lower()
-                    
+                    resp = input("❓ Ver idiomas disponíveis e escolher manualmente? (s/n): ")
+
                     if resp in ['s', 'sim', 'y', 'yes']:
                         for idx, entry, available in videos_missing_subtitles:
                             title = entry.get('title', f"video_{idx}")
@@ -584,15 +662,15 @@ def convert_audio_to_mono_64kbps(
 
     os.makedirs(output_dir, exist_ok=True)
     audio_name = Path(audio_path).stem
-    converted_path = os.path.join(output_dir, f"{audio_name}_64kbps_mono.mp3")
+    converted_path = str(Path(output_dir) / f"{audio_name}_64kbps_mono.mp3")
 
     logger.info(f"🔄 Convertendo para 64kbps mono: {Path(audio_path).name}")
     cmd = [
-        'ffmpeg', '-y', '-i', audio_path,
+        'ffmpeg', '-y', '-i', str(audio_path),
         '-ac', '1',
         '-b:a', '64k',
         '-vn',
-        converted_path
+        str(converted_path)
     ]
     try:
         subprocess.run(cmd, capture_output=True, check=True)
@@ -805,7 +883,7 @@ Examples:
   %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --language pt
 
   # Skip transcription (download and convert only)
-  %(prog)s --url "https://youtube.com/playlist?list=..." --skip-transcription
+  %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --skip-transcription
   
   # Interactive mode with confirmation prompt
   %(prog)s --url "https://youtube.com/playlist?list=..." --api-key "sk-..." --interactive
@@ -1053,3 +1131,6 @@ def main() -> int:
     except Exception as e:
         logger.error(f"❌ Erro fatal: {e}")
         return 1
+
+if __name__ == '__main__':
+    sys.exit(main())

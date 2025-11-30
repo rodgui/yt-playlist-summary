@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Audio to SRT Transcriber using OpenAI Whisper API
 Converts audio files (MP3, M4A, WAV, FLAC, OGG, WEBM) to SRT subtitles with timestamp synchronization.
@@ -588,7 +589,6 @@ CRITICAL: Return exactly {len(batch)} items with all IDs from the input."""
                             translated_subtitles = translated_subtitles[:start_idx]
                             break
                         else:
-                            # Final attempt failed, keep original
                             logger.warning(f"Translation missing for subtitle {sub['index']}, keeping original")
                             translated_subtitles.append(sub)
                 
