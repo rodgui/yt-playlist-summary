@@ -3,7 +3,7 @@
 Study Material Generator
 
 Consolidates SRT subtitles from a playlist and generates unified study content
-using GPT-5-mini. Processes existing subtitle files without re-downloading or
+using GPT-4.1-mini. Processes existing subtitle files without re-downloading or
 re-transcribing videos.
 """
 
@@ -172,9 +172,9 @@ def generate_study_content_with_gpt(
     consolidated_text: str,
     api_key: str,
     language: str = 'pt',
-    model: str = 'gpt-5-mini',
+    model: str = 'gpt-4o-mini',
     temperature: float = 0.3,
-    max_tokens: int = 120000
+    max_tokens: int = 100000
 ) -> str:
     """
     Send consolidated subtitle text to GPT and generate structured study material.
@@ -336,7 +336,9 @@ The material should include:
             messages=[
                 {"role": "system", "content": "You are an expert educational content creator."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens
         )
         
         content = response.choices[0].message.content
@@ -411,7 +413,7 @@ def generate_playlist_study_content(
     else:
         logger.info(f"⏱️  Duração estimada: ~{estimated_duration_seconds_remainder}s")
     
-    logger.info(f"🤖 Modelo: gpt-5-mini")
+    logger.info(f"🤖 Modelo: gpt-4o-mini")
     logger.info("=" * 60)
     
     # Always ask for confirmation before sending to GPT
