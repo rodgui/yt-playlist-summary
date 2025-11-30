@@ -18,16 +18,81 @@ Assistir horas de vídeos educacionais é demorado. Este projeto resolve esse pr
 
 ---
 
+## 📖 O Material de Estudo Gerado
+
+> **"Transforme 10 horas de vídeo em 30 minutos de leitura focada."**
+
+O material gerado não é um simples resumo — é um **documento educacional completo** estruturado por IA para maximizar seu aprendizado:
+
+### 📋 Estrutura do Documento
+
+```
+📚 Material de Estudo - [Nome da Playlist]
+├── 📌 Resumo Executivo
+│   └── Visão geral de todo o conteúdo em poucos parágrafos
+├── 🔑 Conceitos-Chave
+│   └── Definições, contexto, relações e exemplos para cada conceito
+├── 🎬 Conteúdo por Vídeo
+|   |── Resumo individual de cada vídeo
+|   |── Dicas e boas práticas
+│   └── Análise detalhada preservando a sequência original
+├── 💡 Exemplos e Casos Práticos
+│   └── Código, diagramas, modelos de dados, APIs
+├── ✏️ Exercícios e Pontos de Ação
+|   |── Projetos sugeridos para aplicação dos conceitos
+│   └── Atividades práticas para fixação
+├── 📖 Glossário Técnico
+│   └── Termos importantes com definições claras
+├── 📚 Referências e Recursos
+│   └── Links para aprofundamento
+└── 📎 Apêndices
+    └── Templates, snippets, tabelas comparativas, Fluxogramas descritos
+```
+
+### 🎯 Benefícios
+
+| Problema                  | Solução                                                             |
+| ------------------------- | ------------------------------------------------------------------- |
+| ⏰ **Falta de tempo**      | Absorva o conteúdo de horas de vídeo em minutos                     |
+| 🔄 **Revisão difícil**     | Documento pesquisável — encontre qualquer conceito instantaneamente |
+| 📝 **Anotações dispersas** | Tudo consolidado em um único arquivo Markdown                       |
+| 🌍 **Idioma**              | Gere material no seu idioma, mesmo de vídeos estrangeiros           |
+| 💾 **Offline**             | Estude sem internet, imprima, exporte para PDF                      |
+| 🎓 **Aprendizado ativo**   | Exercícios e exemplos práticos incluídos                            |
+
+### 💼 Casos de Uso
+
+- **Estudantes:** Preparação para provas a partir de aulas gravadas
+- **Profissionais:** Capacitação rápida em novas tecnologias
+- **Empresas:** Documentação de treinamentos internos
+- **Criadores de conteúdo:** Base para artigos, posts e cursos derivados
+- **Pesquisadores:** Análise sistemática de conteúdo em vídeo
+
+### 📊 Exemplo Real
+
+De uma playlist com **2 vídeos** (https://www.youtube.com/watch?v=HA414QD3qFw / https://www.youtube.com/watch?v=rNu1gUDnkuY) (~2 min cada), o sistema gerou:
+
+
+- **738 linhas** de conteúdo estruturado
+- **13 conceitos-chave** com definições completas
+- **1 case study detalhado** (ClickTravel) com arquitetura e APIs
+- **Exercícios práticos** e checklist de ação
+- **Glossário** com 20+ termos técnicos
+
+**Custo:** ~$0.03 (GPT) | **Tempo:** ~2 minutos | **Valor:** Inestimável ✨
+
+---
+
 ## ✨ Principais Funcionalidades
 
-| Funcionalidade | Descrição |
-|----------------|-----------|
-| 📥 **Download inteligente** | Baixa vídeos/áudios com controle de rate-limiting |
-| 📝 **Legendas automáticas** | Prioriza legendas do YouTube; usa Whisper AI se não disponíveis |
-| 🔄 **Checkpoint/Retomada** | Interrompa e retome a qualquer momento (Ctrl+C seguro) |
-| 📚 **Material de estudo** | Gera documento educacional completo via GPT |
+| Funcionalidade                 | Descrição                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| 📥 **Download inteligente**     | Baixa vídeos/áudios com controle de rate-limiting                         |
+| 📝 **Legendas automáticas**     | Prioriza legendas do YouTube; usa Whisper AI se não disponíveis           |
+| 🔄 **Checkpoint/Retomada**      | Interrompa e retome a qualquer momento (Ctrl+C seguro)                    |
+| 📚 **Material de estudo**       | Gera documento educacional completo via GPT                               |
 | 🌍 **Multi-idioma inteligente** | Detecta idioma do SO, seleciona legendas por prioridade, evita duplicatas |
-| 🎵 **Modo áudio** | Opção para baixar apenas áudio (economia de espaço) |
+| 🎵 **Modo áudio**               | Opção para baixar apenas áudio (economia de espaço)                       |
 
 ---
 
@@ -163,25 +228,25 @@ output/
 
 ## ⚙️ Parâmetros Disponíveis
 
-| Parâmetro | Padrão | Descrição |
-|-----------|--------|-----------|
-| `-u, --url` | *obrigatório* | URL da playlist ou vídeo |
-| `-k, --api-key` | env `OPENAI_API_KEY` | Chave API OpenAI |
-| `-o, --output` | `./output` | Diretório de saída |
-| `-l, --language` | auto-detect | Idioma para transcrição Whisper |
-| `-a, --audio-only` | `False` | Baixar apenas áudio |
-| `-i, --interactive` | `False` | Modo interativo com confirmações |
-| `-v, --verbose` | `False` | Logs detalhados |
-| `--subtitle-languages` | `pt-BR,en` | Idiomas para buscar legendas |
-| `--download-delay` | `5` | Segundos entre downloads |
-| `--keep-original` | `False` | Manter áudio sem conversão |
-| `--skip-transcription` | `False` | Pular etapa de legendas |
-| `--no-prefer-existing-subtitles` | `False` | Forçar Whisper (ignorar legendas nativas) |
-| `--no-study-material` | `False` | Não gerar material de estudo |
-| `--source-language` | *idioma do SO* | Idioma(s) fonte das legendas (ex: `pt-BR,en`) |
-| `--study-language` | *idioma do SO* | Idioma do material de saída |
-| `--no-checkpoint` | `False` | Desabilitar checkpoint |
-| `--clear-checkpoint` | `False` | Limpar checkpoint e reiniciar |
+| Parâmetro                        | Padrão               | Descrição                                     |
+| -------------------------------- | -------------------- | --------------------------------------------- |
+| `-u, --url`                      | *obrigatório*        | URL da playlist ou vídeo                      |
+| `-k, --api-key`                  | env `OPENAI_API_KEY` | Chave API OpenAI                              |
+| `-o, --output`                   | `./output`           | Diretório de saída                            |
+| `-l, --language`                 | auto-detect          | Idioma para transcrição Whisper               |
+| `-a, --audio-only`               | `False`              | Baixar apenas áudio                           |
+| `-i, --interactive`              | `False`              | Modo interativo com confirmações              |
+| `-v, --verbose`                  | `False`              | Logs detalhados                               |
+| `--subtitle-languages`           | `pt-BR,en`           | Idiomas para buscar legendas                  |
+| `--download-delay`               | `5`                  | Segundos entre downloads                      |
+| `--keep-original`                | `False`              | Manter áudio sem conversão                    |
+| `--skip-transcription`           | `False`              | Pular etapa de legendas                       |
+| `--no-prefer-existing-subtitles` | `False`              | Forçar Whisper (ignorar legendas nativas)     |
+| `--no-study-material`            | `False`              | Não gerar material de estudo                  |
+| `--source-language`              | *idioma do SO*       | Idioma(s) fonte das legendas (ex: `pt-BR,en`) |
+| `--study-language`               | *idioma do SO*       | Idioma do material de saída                   |
+| `--no-checkpoint`                | `False`              | Desabilitar checkpoint                        |
+| `--clear-checkpoint`             | `False`              | Limpar checkpoint e reiniciar                 |
 
 ---
 
@@ -249,9 +314,9 @@ python rename_from_checkpoint.py \
 
 ## 💰 Estimativa de Custos (OpenAI)
 
-| Operação | Custo Aproximado |
-|----------|------------------|
-| Whisper (transcrição) | ~$0.006 por minuto de áudio |
+| Operação                 | Custo Aproximado                              |
+| ------------------------ | --------------------------------------------- |
+| Whisper (transcrição)    | ~$0.006 por minuto de áudio                   |
 | GPT (material de estudo) | ~$0.02-0.05 por playlist típica (5-10 vídeos) |
 
 **Dica:** Use `--prefer-existing-subtitles` (padrão) para economizar — legendas nativas são gratuitas!
@@ -279,10 +344,10 @@ yt-playlist-summary/
 
 O sistema detecta automaticamente o idioma do seu sistema operacional e configura os padrões:
 
-| SO em Português | SO em Inglês |
-|-----------------|---------------|
+| SO em Português         | SO em Inglês            |
+| ----------------------- | ----------------------- |
 | Fonte: `pt-BR, pt, und` | Fonte: `en-US, en, und` |
-| Saída: `pt` | Saída: `en` |
+| Saída: `pt`             | Saída: `en`             |
 
 ### Como funciona
 
@@ -309,13 +374,13 @@ Resultado: 2 legendas processadas em vez de 4!
 
 ## ❓ Solução de Problemas
 
-| Problema | Solução |
-|----------|---------|
-| `FFmpeg not found` | Instale FFmpeg e adicione ao PATH |
-| `API key not found` | Configure `OPENAI_API_KEY` via env ou `--api-key` |
-| Erro de rate-limiting | Aumente `--download-delay` (ex: 10 ou 15) |
-| Vídeo privado/indisponível | O script pula automaticamente e continua |
-| Checkpoint corrompido | Use `--clear-checkpoint` para reiniciar |
+| Problema                   | Solução                                           |
+| -------------------------- | ------------------------------------------------- |
+| `FFmpeg not found`         | Instale FFmpeg e adicione ao PATH                 |
+| `API key not found`        | Configure `OPENAI_API_KEY` via env ou `--api-key` |
+| Erro de rate-limiting      | Aumente `--download-delay` (ex: 10 ou 15)         |
+| Vídeo privado/indisponível | O script pula automaticamente e continua          |
+| Checkpoint corrompido      | Use `--clear-checkpoint` para reiniciar           |
 
 ---
 
