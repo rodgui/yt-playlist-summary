@@ -384,9 +384,12 @@ Resultado: 2 legendas processadas em vez de 4!
 
 ---
 
-## 📄 Licença
+☕ Se este projeto já te poupou horas de vídeo do YouTube, imagina o que ele faz com um café.
+Apoie um desenvolvedor que troca noite de sono por linhas de código — e ajude este projeto a continuar evitando que você assista aulas de 3 horas em 12 velocidades diferentes.
 
-MIT License - Veja [LICENSE](LICENSE) para detalhes.
+Se curtiu, considere me pagar um café. Eu prometo gastar em cafeína… e talvez em mais features.
+
+<a href="https://www.buymeacoffee.com/rodgui" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 ---
 
@@ -400,3 +403,9 @@ Contribuições são bem-vindas! Por favor, mantenha a separação de responsabi
 ---
 
 **Feito com ❤️ para tornar o aprendizado mais eficiente.**
+
+---
+
+## 📄 Licença
+
+MIT License - Veja [LICENSE](LICENSE) para detalhes.
