@@ -3,8 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-#Output
+#Output and Backup
 output/
+backup/
 __*
 .DS_Store
 NAO APAGAR_output/
