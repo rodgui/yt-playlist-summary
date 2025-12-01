@@ -430,9 +430,3 @@ Contribuições são bem-vindas! Por favor, mantenha a separação de responsabi
 ---
 
 **Feito com ❤️ para tornar o aprendizado mais eficiente.**
-
----
-
-## 📄 Licença
-
-MIT License - Veja [LICENSE](LICENSE) para detalhes.
