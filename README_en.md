@@ -16,7 +16,7 @@ Watching hours of educational videos is time-consuming. This project solves this
 
 **Result:** A complete Markdown document that replaces the need to watch the videos.
 
-**Note:** The cost of using OpenAI API (Whisper and Consolidation) is based on token consumption and varies according to playlist size and video duration. Test with small playlists to evaluate costs before using on larger lists.
+**‼️ Note: ‼️** <u>The cost of using OpenAI API (Whisper and Consolidation) is based on token consumption and varies according to playlist size and video duration. Test with small playlists to evaluate costs before using on larger lists!</u>
 
 ---
 
