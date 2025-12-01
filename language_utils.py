@@ -153,31 +153,43 @@ def get_language_variants(code: str) -> List[str]:
     return result
 
 
+def _get_macos_primary_language() -> Optional[str]:
+    """Detect macOS UI language ignoring VS Code/env overrides."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import subprocess, json
+        # AppleLanguages é uma plist em texto; usar defaults
+        out = subprocess.check_output(
+            ["defaults", "read", "-g", "AppleLanguages"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        # Ex: "(\n    pt-BR,\n    en-US,\n    es-ES\n)"
+        langs = re.findall(r'[a-z]{2}(?:-[A-Z]{2})?', out)
+        if not langs:
+            return None
+        return normalize_language_code(langs[0], 'bcp47')
+    except Exception:
+        return None
+
+
 def get_system_language() -> str:
     """
     Detect system language cross-platform.
-    
     Priority:
-        1. Windows: Native API (GetUserDefaultUILanguage) - ignores env vars from VS Code/IDEs
-        2. macOS/Linux: Environment variables (LANG, LC_ALL, etc.)
-        3. Fallback: locale module
-    
-    Returns:
-        BCP 47 language code (e.g., 'pt-BR', 'en-US')
+        1. Windows: Native API
+        2. macOS: AppleLanguages (ignora env de VS Code)
+        3. Env vars (LANGUAGE, LC_ALL, LC_MESSAGES, LANG)
+        4. locale.getlocale
     """
     lang_code = None
-    
-    # Method 1: Windows native API (priority on Windows to ignore IDE env vars)
+
     if sys.platform == 'win32':
         try:
             import ctypes
             windll = ctypes.windll.kernel32
             lang_id = windll.GetUserDefaultUILanguage()
-            
-            # Try full mapping first
             lang_code = WINDOWS_LANGID_MAP.get(lang_id)
-            
-            # Fallback to primary language
             if not lang_code:
                 primary = lang_id & 0x3FF
                 base_lang = WINDOWS_PRIMARY_LANG_MAP.get(primary)
@@ -185,30 +197,28 @@ def get_system_language() -> str:
                     lang_code = base_lang
         except Exception:
             pass
-    
-    # Method 2: Environment variables (Linux/macOS, or Windows fallback)
+    elif sys.platform == 'darwin':
+        lang_code = _get_macos_primary_language()
+
     if not lang_code:
         for env_var in ('LANGUAGE', 'LC_ALL', 'LC_MESSAGES', 'LANG'):
             lang = os.environ.get(env_var)
             if lang and lang not in ('C', 'POSIX'):
-                # Extract code: 'pt_BR.UTF-8' -> 'pt-BR'
                 lang_code = normalize_language_code(lang, 'bcp47')
                 if lang_code and lang_code != 'c':
                     break
                 lang_code = None
-    
-    # Method 3: locale module fallback
+
     if not lang_code:
         try:
             import locale
-            # LC_MESSAGES not available on Windows, use LC_ALL
             lc_category = getattr(locale, 'LC_MESSAGES', locale.LC_ALL)
             loc = locale.getlocale(lc_category)
             if loc[0]:
                 lang_code = normalize_language_code(loc[0], 'bcp47')
         except Exception:
             pass
-    
+
     return lang_code if lang_code else 'en-US'
 
 
