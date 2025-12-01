@@ -103,7 +103,30 @@ De uma playlist com **2 vídeos** (https://www.youtube.com/watch?v=HA414QD3qFw /
 - **Python** 3.10 ou superior
 - **FFmpeg** e **ffprobe** instalados e no PATH
 - **Chave API OpenAI** (para transcrição Whisper e geração de material)
+  - Obtenha em: https://platform.openai.com/account/api-keys (abaixo um passo a passo de como criar a chave)
 
+### Como obter a chave API OpenAI
+1. Acesse [OpenAI Platform](https://platform.openai.com/).
+2. Faça login ou crie uma conta.
+3. No painel, vá para "API Keys" no menu lateral.
+4. Clique em "Create new secret key".
+5. Copie a chave gerada (começa com "sk-...") e guarde em local seguro.
+6. Use essa chave para configurar a variável de ambiente `OPENAI_API_KEY` ou passe via parâmetro `--api-key`.
+
+### Configurar a variável de ambiente `OPENAI_API_KEY`
+- **Linux/macOS:**
+  ```bash
+  export OPENAI_API_KEY="sk-..."
+  ```
+- **Windows CMD:**
+  ```cmd
+  set OPENAI_API_KEY=sk-...
+  ```
+- **Windows PowerShell:** 
+  ```powershell
+  $env:OPENAI_API_KEY="sk-..."
+  ```   
+  
 ### Instalação do FFmpeg
 
 **Windows (via winget):**
