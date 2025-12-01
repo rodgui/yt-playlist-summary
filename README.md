@@ -16,7 +16,7 @@ Assistir horas de vídeos educacionais é demorado. Este projeto resolve esse pr
 
 **Resultado:** Um documento Markdown completo que substitui a necessidade de assistir aos vídeos.
 
-**Atenção:** O custo de uso da API OpenAi (Whisper e Consolidação) é baseado no consumo de tokens e varia conforme o tamanho da playlist e duração dos vídeos. Faça um teste com playlists pequenas para avaliar custos antes de usar em listas maiores.
+**‼️ Atenção: ‼️** <u>O custo de uso da API OpenAi (Whisper e Consolidação) é baseado no consumo de tokens e varia conforme o tamanho da playlist e duração dos vídeos. Faça um teste com playlists pequenas para avaliar custos antes de usar em listas maiores.</u>
 
 ---
 
