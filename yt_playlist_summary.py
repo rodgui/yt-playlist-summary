@@ -9,26 +9,26 @@ and SRT subtitle generation.
 
 Created by Rodgui (rod.gui@gmail.com / @rodgui on GitHub)
 """
-
+       
 import argparse
 import io
 import logging
 import os
 import sys
-
+       
 # Forçar UTF-8 no stdout/stderr para Windows
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
+       
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
+       
 import yt_dlp
-
+       
 # Import checkpoint manager
 from checkpoint_manager import CheckpointManager, get_checkpoint_path
 

@@ -7,7 +7,7 @@ Consolidates SRT subtitles from a playlist and generates unified study content
 using GPT-5-mini. Processes existing subtitle files without re-downloading or
 re-transcribing videos.
 """
-
+       
 import os
 import re
 import json
@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import hashlib
-
+       
 from openai import OpenAI
-
+       
 # Import language utilities
 from language_utils import (
     normalize_language_code,

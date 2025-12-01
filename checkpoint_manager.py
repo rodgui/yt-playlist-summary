@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Checkpoint Manager
-
+       
 Manages download progress tracking for playlist processing, enabling
 resume capability after interruptions.
 """
-
+       
 import json
 import os
 import logging
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 import hashlib
-
+       
 logger = logging.getLogger('checkpoint_manager')
 
 

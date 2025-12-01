@@ -5,10 +5,11 @@ import os
 import sys
 from pathlib import Path
 import logging
+       
 from typing import List, Tuple
 
 from openai import OpenAI
-
+       
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
